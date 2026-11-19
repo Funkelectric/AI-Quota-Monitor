@@ -66,6 +66,11 @@ export function mockQuotaPayload(): QuotaPayload {
       today_cost_usd: cost,
       today_tokens_k: tokensK,
       providers: snapshotPools(ocProviders),
+      sessions: [
+        { title: "ESP32 display choice bu", model: "Muse Spark 1.3 Contributor" },
+        { title: "Pure-black redesign", model: "Muse Spark 1.3 Contributor" },
+        { title: "CYD ask-screen mockup", model: "Muse Spark 1.3 Contributor" },
+      ],
     },
   };
   payload.overall_status = overallStatusFor(payload);

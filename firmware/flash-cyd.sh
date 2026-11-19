@@ -58,9 +58,13 @@ lib_deps =
 
 [env:cyd-ili9341]
 extends = env:cyd-st7789
+; Proven on this unit (2026-11-19): alt ILI9341 init fixes column offset,
+; inversion ON restores black bg + blue palette. Stock ILI9341_DRIVER shows
+; rotated + noise on this panel; ST7789 builds show inverted colors.
 build_flags =
   -D USER_SETUP_LOADED=1
-  -D ILI9341_DRIVER=1
+  -D ILI9341_2_DRIVER=1
+  -D TFT_INVERSION_ON=1
   -D TFT_WIDTH=240
   -D TFT_HEIGHT=320
   -D TFT_MOSI=13
@@ -130,7 +134,8 @@ cat > include/config.h <<'EOF_CFG'
 #define SCR_PROVIDERS 1
 #define SCR_SCOPE     2
 #define SCR_CLOCK     3
-#define SCR_COUNT     4
+#define SCR_ASK       4
+#define SCR_COUNT     5
 
 // Network / bridge defaults
 #define WIFI_AP_NAME "NM-Quota-Setup"
@@ -159,6 +164,18 @@ cat > include/config.h <<'EOF_CFG'
 #define POOL_NAME_MAX 23
 #define MODEL_NAME_MAX 23
 #define POOLS_MAX 4
+#define SESSIONS_MAX 4
+#define SESSION_TITLE_MAX 23
+#define SESSION_MODEL_MAX 31
+
+// 05 ASK screen: question queue state (<1KB payload).
+#define ASK_JSON_MAX 1024
+#define ASK_QUESTION_MAX 120
+#define ASK_DETAIL_MAX 48
+#define ASK_OPTS_MAX 4
+#define ASK_OPT_LABEL_MAX 24
+#define ASK_ID_MAX 15
+#define ASK_POLL_SEC 5
 EOF_CFG
 
 cat > include/ui_theme.h <<'EOF_THEME'
@@ -218,6 +235,12 @@ bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeout
 /** GET http://host:port/api/quota into out. False on any transport/parse error. */
 bool netFetchQuota(const NetConfig &cfg, struct QuotaState &out);
 
+/** GET http://host:port/api/ask. True+pending on 200, true+!pending on 204, false on error. */
+bool netFetchAsk(const NetConfig &cfg, struct AskState &out);
+
+/** POST http://host:port/api/ask/answer {id, option_id}. True on 200. */
+bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id);
+
 bool netIsConnected();
 EOF_NETH
 
@@ -234,6 +257,11 @@ struct PoolState {
   uint8_t status;  // ST_OK / ST_WARN / ST_CRIT
 };
 
+struct SessionState {
+  char title[SESSION_TITLE_MAX + 1];
+  char model[SESSION_MODEL_MAX + 1];
+};
+
 struct QuotaState {
   bool oc_connected;
   float oc_cost;
@@ -241,6 +269,8 @@ struct QuotaState {
   PoolState oc[POOLS_MAX];
   uint8_t oc_count;
   bool oc_stale;
+  SessionState sessions[SESSIONS_MAX];
+  uint8_t session_count;
 
   uint8_t overall;  // ST_OK / ST_WARN / ST_CRIT / ST_OFFLINE
   unsigned long updated_ms;
@@ -262,6 +292,82 @@ float minRemaining(const QuotaState &q);
 /** Shortest reset across providers in seconds (0 when none). */
 long minReset(const QuotaState &q);
 EOF_QSH
+
+cat > src/ask_state.h <<'EOF_ASKH'
+#pragma once
+#include <Arduino.h>
+#include "config.h"
+
+// Pending OpenCode question for the 05 ASK screen (GET /api/ask).
+struct AskOpt {
+  char id[ASK_ID_MAX + 1];
+  char label[ASK_OPT_LABEL_MAX + 1];
+};
+
+struct AskState {
+  char id[ASK_ID_MAX + 1];
+  char question[ASK_QUESTION_MAX + 1];
+  char detail[ASK_DETAIL_MAX + 1];
+  AskOpt opts[ASK_OPTS_MAX];
+  uint8_t count;
+  unsigned long expires_ms;
+  bool pending;
+  bool fresh;  // true once we have seen at least one payload (pending or 204)
+};
+
+/** Parse a GET /api/ask body (200). False on parse error (out untouched). */
+bool parseAskPayload(const char *json, size_t len, AskState &out);
+EOF_ASKH
+
+cat > src/ask_state.cpp <<'EOF_ASKC'
+#include "ask_state.h"
+#include <ArduinoJson.h>
+#include <string.h>
+
+static void copyAsk(char *dst, size_t dstLen, const char *src) {
+  if (!src) src = "?";
+  strncpy(dst, src, dstLen - 1);
+  dst[dstLen - 1] = '\0';
+}
+
+// Own static doc: never shares quota_state's document (heap-stable for soak).
+static JsonDocument g_askDoc;
+
+bool parseAskPayload(const char *json, size_t len, AskState &out) {
+  if (!json || len == 0 || len > ASK_JSON_MAX) return false;
+  g_askDoc.clear();
+  DeserializationError err = deserializeJson(g_askDoc, json, len);
+  if (err) return false;
+
+  AskState next = {};
+  next.pending = true;
+  next.fresh = true;
+  copyAsk(next.id, sizeof(next.id), g_askDoc["id"] | "");
+  if (strlen(next.id) == 0) return false;
+  copyAsk(next.question, sizeof(next.question), g_askDoc["question"] | "?");
+  copyAsk(next.detail, sizeof(next.detail), g_askDoc["detail"] | "");
+  long timeout_sec = g_askDoc["timeout_sec"] | 90L;
+  if (timeout_sec < 10) timeout_sec = 10;
+  if (timeout_sec > 300) timeout_sec = 300;
+  long ts = g_askDoc["ts"] | 0L;
+  (void)ts;
+  next.expires_ms = millis() + (unsigned long)timeout_sec * 1000UL;
+  JsonArray opts = g_askDoc["options"];
+  next.count = 0;
+  if (!opts.isNull()) {
+    for (JsonObject o : opts) {
+      if (next.count >= ASK_OPTS_MAX) break;
+      AskOpt &d = next.opts[next.count++];
+      copyAsk(d.id, sizeof(d.id), o["id"] | "");
+      copyAsk(d.label, sizeof(d.label), o["label"] | "?");
+      if (strlen(d.id) == 0) snprintf(d.id, sizeof(d.id), "opt%d", next.count);
+    }
+  }
+  if (next.count == 0) return false;
+  out = next;
+  return true;
+}
+EOF_ASKC
 
 cat > src/led_controller.h <<'EOF_LEDH'
 #pragma once
@@ -295,12 +401,14 @@ cat > src/ui/screens.h <<'EOF_SCRH'
 #pragma once
 #include <Arduino.h>
 #include "quota_state.h"
+#include "ask_state.h"
 
 // netUp: WiFi connected. serialMode: showing USB-serial data path.
 void drawOverview(const QuotaState &q, bool netUp, bool serialMode);
 void drawProviders(const QuotaState &q, bool netUp, bool serialMode);
 void drawScope(const QuotaState &q, bool netUp, bool serialMode);
 void drawClock(const QuotaState &q, bool netUp, bool serialMode);
+void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode);
 EOF_SCRH
 
 cat > src/quota_state.cpp <<'EOF_QS'
@@ -389,6 +497,16 @@ bool parseQuotaPayload(const char *json, size_t len, QuotaState &out) {
       dst.remaining_pct = p["remaining_pct"] | 0.0f;
       dst.reset_in_sec = p["reset_in_sec"] | 0L;
       dst.status = parseStatus(p["status"], dst.remaining_pct);
+    }
+  }
+  JsonArray sess = oc["sessions"];
+  next.session_count = 0;
+  if (!sess.isNull()) {
+    for (JsonObject s : sess) {
+      if (next.session_count >= SESSIONS_MAX) break;
+      SessionState &d = next.sessions[next.session_count++];
+      copyName(d.title, sizeof(d.title), s["title"] | "?");
+      copyName(d.model, sizeof(d.model), s["model"] | "?");
     }
   }
 
@@ -490,6 +608,7 @@ EOF_LED
 cat > src/network.cpp <<'EOF_NET'
 #include "network.h"
 #include "quota_state.h"
+#include "ask_state.h"
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -611,6 +730,64 @@ bool netFetchQuota(const NetConfig &cfg, QuotaState &out) {
 }
 
 bool netIsConnected() { return WiFi.status() == WL_CONNECTED; }
+
+// Shared ask buffer (separate from quota buffer so polls never interleave).
+static char g_askBuf[ASK_JSON_MAX + 1];
+
+bool netFetchAsk(const NetConfig &cfg, AskState &out) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  char url[128];
+  snprintf(url, sizeof(url), "http://%s:%u/api/ask", cfg.host, cfg.port);
+
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(url)) return false;
+  int code = http.GET();
+  if (code == 204) {
+    http.end();
+    out.pending = false;
+    out.fresh = true;
+    return true;
+  }
+  bool ok = false;
+  if (code == 200) {
+    int len = http.getSize();
+    if (len < 0) len = ASK_JSON_MAX;
+    if (len > ASK_JSON_MAX) len = ASK_JSON_MAX;
+    WiFiClient *stream = http.getStreamPtr();
+    size_t n = 0;
+    unsigned long deadline = millis() + HTTP_TIMEOUT_MS;
+    unsigned long lastProgress = millis();
+    while (n < (size_t)len && millis() < deadline) {
+      while (stream->available() && n < ASK_JSON_MAX) {
+        g_askBuf[n++] = (char)stream->read();
+        lastProgress = millis();
+      }
+      if ((int)n >= len && len > 0) break;
+      if (millis() - lastProgress > 1500) break;
+      delay(1);
+    }
+    ok = parseAskPayload(g_askBuf, n, out);
+  }
+  http.end();
+  return ok;
+}
+
+bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) {
+  if (WiFi.status() != WL_CONNECTED || !id || !option_id) return false;
+  char url[128];
+  snprintf(url, sizeof(url), "http://%s:%u/api/ask/answer", cfg.host, cfg.port);
+
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(url)) return false;
+  http.addHeader("Content-Type", "application/json");
+  char body[96];
+  snprintf(body, sizeof(body), "{\"id\":\"%.15s\",\"option_id\":\"%.15s\"}", id, option_id);
+  int code = http.POST((uint8_t *)body, strlen(body));
+  http.end();
+  return code == 200;
+}
 EOF_NET
 
 cat > src/ui/display.cpp <<'EOF_DISP'
@@ -674,6 +851,7 @@ EOF_DISP
 cat > src/ui/screens.cpp <<'EOF_SCR'
 #include "screens.h"
 #include "display.h"
+#include "ask_state.h"
 #include "ui_theme.h"
 #include "config.h"
 #include <math.h>
@@ -694,6 +872,7 @@ static const char *screenSection(uint8_t scr) {
     case SCR_PROVIDERS: return "02 · PROVIDERS";
     case SCR_SCOPE: return "03 · SCOPE";
     case SCR_CLOCK: return "04 · STANDBY";
+    case SCR_ASK: return "05 · ASK";
     default: return "01 · QUOTA";
   }
 }
@@ -780,7 +959,7 @@ static void meterBar(int x, int y, int w, int h, float pct, uint8_t status) {
   t.drawFastVLine(mx, y + 1, h - 2, COLOR_TEXT);
 }
 
-// Right-aligned value pair: big % colored + countdown dim.
+// Legacy right-aligned pair (kept for 03 SCOPE narrow column).
 static void rightPair(int y, const PoolState &p, int right) {
   TFT_eSPI &t = display();
   char cd[12];
@@ -793,10 +972,30 @@ static void rightPair(int y, const PoolState &p, int right) {
   t.setCursor(right - pw, y);
   t.print(pct);
   t.setTextFont(2);
-  t.setTextColor(COLOR_DIM, COLOR_BG);
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
   t.setCursor(right - pw + 2, y + 26);
   t.print("%");
   t.setCursor(right - 62, y + 26);
+  t.print(cd);
+}
+
+// Centered value: big % near-center, countdown right-aligned + readable.
+// % anchors at x=180 (not 160) so long "GO MONTH" labels never overlap.
+static void centerPair(int y, const PoolState &p, int right) {
+  TFT_eSPI &t = display();
+  char cd[12];
+  fmtCountdown(p.reset_in_sec, cd, sizeof(cd));
+  char pct[12];
+  snprintf(pct, sizeof(pct), "%.1f%%", p.remaining_pct);
+  t.setTextFont(4);
+  t.setTextColor(statusColor(p.status), COLOR_BG);
+  int pw = t.textWidth(pct);
+  t.setCursor(180 - pw / 2, y);
+  t.print(pct);
+  t.setTextFont(2);
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
+  int cw = t.textWidth(cd);
+  t.setCursor(right - cw, y + 8);
   t.print(cd);
 }
 
@@ -952,34 +1151,39 @@ static void drawHeroPanel(const QuotaState &q) {
     t.setCursor(lx, ly);
     t.print(lbl);
   }
+}
 
-  // WINDOWS inset: mini level bars, bottom-left inside the panel.
-  const int wx = HERO_X0 + 6, wy = HERO_Y1 - 36, ww = 52, wh = 30;
-  t.fillRect(wx, wy, ww, wh, COLOR_BG);
-  t.drawRect(wx, wy, ww, wh, COLOR_EDGE);
-  tiny("WIN", wx + 4, wy + 3, COLOR_DIM, COLOR_BG);
-  for (uint8_t i = 0; i < n && i < 4; i++) {
-    int bh = (int)(constrain(levels[i], 0, 100) / 100.0f * 18.0f);
-    int bx = wx + 5 + i * 12;
-    if (bh > 0) t.fillRectVGradient(bx, wy + wh - 3 - bh, 9, bh, statusColor(q.oc[i].status), darken(statusColor(q.oc[i].status)));
+// Session rotator strip: conversation title + model between hero graph and
+// bottom readout. Rotates one session per 10s render (matches main.cpp tick).
+// Gap geometry: hero ends y=172, strip hairline y=210 → text at y=184..200.
+static void sessionStrip(const QuotaState &q) {
+  TFT_eSPI &t = display();
+  tiny("SESSION", MARGIN, 176, COLOR_DIM, COLOR_BG);
+  if (q.session_count == 0) {
+    t.setTextFont(2);
+    t.setTextColor(COLOR_DIM, COLOR_BG);
+    t.setCursor(MARGIN, 186);
+    t.print("-- idle --");
+    return;
   }
-
-  // SCOPE inset: min-level ring gauge, bottom-right inside the panel
-  // (the curve runs high, so the bottom corner stays clear).
-  const int sx = HERO_X1 - 66, sy = HERO_Y1 - 56, sw = 60, sh = 50;
-  t.fillRect(sx, sy, sw, sh, COLOR_BG);
-  t.drawRect(sx, sy, sw, sh, COLOR_EDGE);
-  tiny("SCOPE", sx + 4, sy + 3, COLOR_DIM, COLOR_BG);
-  const int rcx = sx + sw - 20, rcy = sy + 30, rr = 14;
-  float m = minRemaining(q);
-  t.drawArc(rcx, rcy, rr, rr - 4, 0, 360, COLOR_EDGE, COLOR_EDGE, false);
-  int end = (int)(constrain(m, 0, 100) / 100.0f * 360.0f);
-  if (end > 0) {
-    uint8_t st = ST_OK;
-    for (uint8_t i = 0; i < n; i++) st = max(st, q.oc[i].status);
-    t.drawArc(rcx, rcy, rr, rr - 4, 0, (uint32_t)end, statusColor(st), statusColor(st), true);
+  uint8_t idx = (uint8_t)((millis() / 10000UL) % q.session_count);
+  const SessionState &s = q.sessions[idx];
+  if (q.session_count > 1) {
+    char pager[8];
+    snprintf(pager, sizeof(pager), "%d/%d", idx + 1, q.session_count);
+    t.setTextFont(1);
+    int pw = t.textWidth(pager);
+    t.setTextColor(COLOR_DIM, COLOR_BG);
+    t.setCursor(LAYOUT_W - MARGIN - pw, 176);
+    t.print(pager);
   }
-  charPct(rcx, rcy, m);
+  char line[SESSION_TITLE_MAX + SESSION_MODEL_MAX + 4];
+  snprintf(line, sizeof(line), "%s - %s", s.title, s.model);
+  t.setTextFont(2);
+  while (strlen(line) > 1 && t.textWidth(line) > LAYOUT_W - MARGIN * 2) line[strlen(line) - 1] = '\0';
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
+  t.setCursor(MARGIN, 186);
+  t.print(line);
 }
 
 void drawOverview(const QuotaState &q, bool netUp, bool serialMode) {
@@ -993,6 +1197,7 @@ void drawOverview(const QuotaState &q, bool netUp, bool serialMode) {
     return;
   }
   drawHeroPanel(q);
+  sessionStrip(q);
   readoutStrip(q);
 }
 
@@ -1008,12 +1213,10 @@ void drawProviders(const QuotaState &q, bool netUp, bool serialMode) {
   int y = HEADER_H + 10;
   for (uint8_t i = 0; i < q.oc_count && i < POOLS_MAX; i++) {
     const PoolState &p = q.oc[i];
-    char lbl[32];
-    snprintf(lbl, sizeof(lbl), "P%d · %s", i + 1, p.name);
-    spaced(lbl, 12, y, q.oc_stale ? COLOR_AMBER : COLOR_DIM, COLOR_BG);
-    rightPair(y + 2, p, LAYOUT_W - 12);
-    meterBar(12, y + 46, LAYOUT_W - 24, 8, p.remaining_pct, p.status);
-    y += 62;
+    spaced(p.name, 12, y, q.oc_stale ? COLOR_AMBER : COLOR_DIM, COLOR_BG);
+    centerPair(y + 2, p, LAYOUT_W - 12);
+    meterBar(12, y + 46, LAYOUT_W - 24, 10, p.remaining_pct, p.status);
+    y += 64;
   }
 }
 
@@ -1115,6 +1318,89 @@ void drawClock(const QuotaState &q, bool netUp, bool serialMode) {
   const char *msg = q.oc_connected ? "SYNCED" : "WAITING FOR BRIDGE";
   spaced(msg, 200, 196, q.fresh ? COLOR_ICE : COLOR_DIM, COLOR_BG);
 }
+
+// ---- 05 ASK: OpenCode question with bottom touch buttons ----
+// Geometry mirrors mock_hw_render.py:screen_ask() (ASK_BTNS_* boxes).
+// 3-up: (8,172,97,48) (111,172,97,48) (214,172,98,48)
+// 2-up: (8,172,149,48) (163,172,149,48)
+// 4-grid: (8,124,149,44) (163,124,149,44) (8,174,149,44) (163,174,149,44)
+static void askButton(int x, int y, int w, int h, const char *label) {
+  TFT_eSPI &t = display();
+  t.drawRoundRect(x, y, w, h, 3, COLOR_EDGE);
+  t.fillRoundRect(x + 1, y + 1, w - 2, h - 2, 2, COLOR_CARD);
+  char b[ASK_OPT_LABEL_MAX + 1];
+  strncpy(b, label, sizeof(b) - 1);
+  b[sizeof(b) - 1] = '\0';
+  t.setTextFont(2);
+  while (strlen(b) > 1 && t.textWidth(b) > w - 12) b[strlen(b) - 1] = '\0';
+  t.setTextColor(COLOR_TEXT, COLOR_CARD);
+  t.setCursor(x + (w - t.textWidth(b)) / 2, y + (h - 16) / 2);
+  t.print(b);
+}
+
+void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode) {
+  TFT_eSPI &t = display();
+  t.fillScreen(COLOR_BG);
+  header(q, netUp, serialMode);
+
+  if (!a.pending) {
+    spaced("NO QUESTION", 100, 110, COLOR_DIM, COLOR_BG);
+    return;
+  }
+
+  if (a.count > 3) {
+    // 4-option grid: compact card, no preview rows.
+    t.drawRoundRect(8, 34, 304, 82, 4, COLOR_EDGE);
+    t.fillRoundRect(9, 35, 302, 80, 3, COLOR_BG);
+    tiny("OPENCODE ASKS", 13, 38, COLOR_DIM, COLOR_BG);
+    char qb[ASK_QUESTION_MAX + 1];
+    strncpy(qb, a.question, sizeof(qb) - 1); qb[sizeof(qb) - 1] = '\0';
+    t.setTextFont(2);
+    while (strlen(qb) > 1 && t.textWidth(qb) > 292) qb[strlen(qb) - 1] = '\0';
+    t.setTextColor(COLOR_TEXT, COLOR_BG);
+    t.setCursor(13, 50);
+    t.print(qb);
+    const int bx[4] = {8, 163, 8, 163}, by[4] = {124, 124, 174, 174};
+    for (uint8_t i = 0; i < 4; i++) askButton(bx[i], by[i], 149, 44, a.opts[i].label);
+  } else {
+    t.drawRoundRect(8, 34, 304, 128, 4, COLOR_EDGE);
+    t.fillRoundRect(9, 35, 302, 126, 3, COLOR_BG);
+    tiny("OPENCODE ASKS", 13, 38, COLOR_DIM, COLOR_BG);
+    char qb[ASK_QUESTION_MAX + 1];
+    strncpy(qb, a.question, sizeof(qb) - 1); qb[sizeof(qb) - 1] = '\0';
+    t.setTextFont(2);
+    while (strlen(qb) > 1 && t.textWidth(qb) > 292) qb[strlen(qb) - 1] = '\0';
+    t.setTextColor(COLOR_TEXT, COLOR_BG);
+    t.setCursor(13, 50);
+    t.print(qb);
+    t.setTextFont(2);
+    t.setTextColor(COLOR_DIM, COLOR_BG);
+    t.setCursor(13, 68);
+    t.print(a.detail[0] ? a.detail : "tap an answer below");
+    t.drawFastHLine(13, 88, 294, COLOR_EDGE);
+    int y = 94;
+    for (uint8_t i = 0; i < a.count; i++) {
+      char row[64];
+      snprintf(row, sizeof(row), "%s - %s", a.opts[i].id, a.opts[i].label);
+      while (strlen(row) > 1 && t.textWidth(row) > 292) row[strlen(row) - 1] = '\0';
+      t.setCursor(13, y);
+      t.setTextColor(COLOR_DIM, COLOR_BG);
+      t.print(a.opts[i].id);
+      t.setTextColor(COLOR_TEXT, COLOR_BG);
+      t.print(" ");
+      t.print(a.opts[i].label);
+      y += 18;
+    }
+    if (a.count == 2) {
+      askButton(8, 172, 149, 48, a.opts[0].label);
+      askButton(163, 172, 149, 48, a.opts[1].label);
+    } else {
+      const int bx3[3] = {8, 111, 214}, bw3[3] = {97, 97, 98};
+      for (uint8_t i = 0; i < a.count && i < 3; i++) askButton(bx3[i], 172, bw3[i], 48, a.opts[i].label);
+    }
+  }
+  tiny("TAP TO ANSWER - BOOT = NEXT", 86, 226, COLOR_DIM, COLOR_BG);
+}
 EOF_SCR
 
 cat > src/main.cpp <<'EOF_MAIN'
@@ -1125,16 +1411,22 @@ cat > src/main.cpp <<'EOF_MAIN'
 #include "ui_theme.h"
 #include "network.h"
 #include "quota_state.h"
+#include "ask_state.h"
 #include "led_controller.h"
 #include "ui/display.h"
 #include "ui/screens.h"
 
 uint8_t g_screen = SCR_OVERVIEW;
 
+static void render();
+static void pollAskNow();
+
 static NetConfig g_cfg;
 static QuotaState g_state;
+static AskState g_ask;
 static bool g_serialMode = false;
 static unsigned long g_lastPoll = 0;
+static unsigned long g_lastAskPoll = 0;
 static unsigned long g_lastRender = 0;
 static unsigned long g_lastBl = 0;
 static bool g_forcePoll = false;
@@ -1153,6 +1445,7 @@ static void render() {
     case SCR_PROVIDERS: drawProviders(g_state, netUp, g_serialMode); break;
     case SCR_SCOPE: drawScope(g_state, netUp, g_serialMode); break;
     case SCR_CLOCK: drawClock(g_state, netUp, g_serialMode); break;
+    case SCR_ASK: drawAsk(g_ask, g_state, netUp, g_serialMode); break;
     default: drawOverview(g_state, netUp, g_serialMode); break;
   }
   g_lastRender = millis();
@@ -1235,9 +1528,58 @@ void setup() {
   bool bootPortal = digitalRead(PIN_BUTTON_BOOT) == LOW;
   bool netUp = netEnsureWiFi(g_cfg, bootPortal);
   g_serialMode = !netUp;  // no WiFi -> listen on USB Serial
-  if (netUp) pollNow();
+  if (netUp) { pollNow(); pollAskNow(); }
   render();
   Serial.println("cyd-quota-monitor boot ok");
+}
+
+static void pollAskNow() {
+  if (!netIsConnected() || g_serialMode) return;
+  AskState next = g_ask;
+  bool ok = netFetchAsk(g_cfg, next);
+  g_lastAskPoll = millis();
+  if (!ok) return;
+  bool wasPending = g_ask.pending;
+  const char *wasId = g_ask.id;
+  g_ask = next;
+  if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
+    g_screen = SCR_ASK;  // auto-popup on new question
+    render();
+  } else if (!next.pending && wasPending && g_screen == SCR_ASK) {
+    g_screen = SCR_OVERVIEW;  // answered / timed out elsewhere
+    render();
+  } else if (next.pending && g_screen == SCR_ASK) {
+    render();
+  }
+}
+
+// ASK button hit-test. Boxes mirror drawAsk()/mock ASK_BTNS_*.
+// Returns option index or -1.
+static int askHit(uint8_t count, uint16_t tx, uint16_t ty) {
+  if (ty < 118) return -1;
+  if (count == 2) {
+    if (ty >= 172 && ty <= 220) {
+      if (tx >= 8 && tx <= 157) return 0;
+      if (tx >= 163 && tx <= 312) return 1;
+    }
+    return -1;
+  }
+  if (count >= 4) {
+    if (tx >= 8 && tx <= 157) {
+      if (ty >= 124 && ty <= 168) return 0;
+      if (ty >= 174 && ty <= 218) return 2;
+    } else if (tx >= 163 && tx <= 312) {
+      if (ty >= 124 && ty <= 168) return 1;
+      if (ty >= 174 && ty <= 218) return 3;
+    }
+    return -1;
+  }
+  if (ty >= 172 && ty <= 220) {
+    if (tx >= 8 && tx <= 105) return 0;
+    if (tx >= 111 && tx <= 208) return 1;
+    if (tx >= 214 && tx <= 312) return 2;
+  }
+  return -1;
 }
 
 void loop() {
@@ -1246,7 +1588,22 @@ void loop() {
 
   uint16_t tx, ty;
   if (touchTap(tx, ty)) {
-    if (ty < HEADER_H) {
+    if (g_screen == SCR_ASK && g_ask.pending) {
+      if (ty < HEADER_H) {
+        g_forcePoll = true;  // top bar tap: force refresh
+        pollAskNow();
+      } else {
+        int hit = askHit(g_ask.count, tx, ty);
+        if (hit >= 0 && hit < g_ask.count) {
+          if (netPostAnswer(g_cfg, g_ask.id, g_ask.opts[hit].id)) {
+            g_ask.pending = false;
+            g_screen = SCR_OVERVIEW;
+            render();
+          }
+        }
+        // Other taps while pending are ignored (no screen change).
+      }
+    } else if (ty < HEADER_H) {
       g_forcePoll = true;  // top bar tap: force refresh
     } else if (tx < LAYOUT_W / 2) {
       prevScreen();
@@ -1260,6 +1617,10 @@ void loop() {
   if (g_forcePoll || (netIsConnected() && !g_serialMode && now - g_lastPoll > interval)) {
     g_forcePoll = false;
     pollNow();
+    pollAskNow();
+  }
+  if (netIsConnected() && !g_serialMode && now - g_lastAskPoll > (unsigned long)ASK_POLL_SEC * 1000UL) {
+    pollAskNow();
   }
 
   // Countdowns tick: refresh the current screen every 10s even without new data.

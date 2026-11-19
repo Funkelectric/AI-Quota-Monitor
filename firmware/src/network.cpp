@@ -1,5 +1,6 @@
 #include "network.h"
 #include "quota_state.h"
+#include "ask_state.h"
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -121,3 +122,61 @@ bool netFetchQuota(const NetConfig &cfg, QuotaState &out) {
 }
 
 bool netIsConnected() { return WiFi.status() == WL_CONNECTED; }
+
+// Shared ask buffer (separate from quota buffer so polls never interleave).
+static char g_askBuf[ASK_JSON_MAX + 1];
+
+bool netFetchAsk(const NetConfig &cfg, AskState &out) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  char url[128];
+  snprintf(url, sizeof(url), "http://%s:%u/api/ask", cfg.host, cfg.port);
+
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(url)) return false;
+  int code = http.GET();
+  if (code == 204) {
+    http.end();
+    out.pending = false;
+    out.fresh = true;
+    return true;
+  }
+  bool ok = false;
+  if (code == 200) {
+    int len = http.getSize();
+    if (len < 0) len = ASK_JSON_MAX;
+    if (len > ASK_JSON_MAX) len = ASK_JSON_MAX;
+    WiFiClient *stream = http.getStreamPtr();
+    size_t n = 0;
+    unsigned long deadline = millis() + HTTP_TIMEOUT_MS;
+    unsigned long lastProgress = millis();
+    while (n < (size_t)len && millis() < deadline) {
+      while (stream->available() && n < ASK_JSON_MAX) {
+        g_askBuf[n++] = (char)stream->read();
+        lastProgress = millis();
+      }
+      if ((int)n >= len && len > 0) break;
+      if (millis() - lastProgress > 1500) break;
+      delay(1);
+    }
+    ok = parseAskPayload(g_askBuf, n, out);
+  }
+  http.end();
+  return ok;
+}
+
+bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) {
+  if (WiFi.status() != WL_CONNECTED || !id || !option_id) return false;
+  char url[128];
+  snprintf(url, sizeof(url), "http://%s:%u/api/ask/answer", cfg.host, cfg.port);
+
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(url)) return false;
+  http.addHeader("Content-Type", "application/json");
+  char body[96];
+  snprintf(body, sizeof(body), "{\"id\":\"%.15s\",\"option_id\":\"%.15s\"}", id, option_id);
+  int code = http.POST((uint8_t *)body, strlen(body));
+  http.end();
+  return code == 200;
+}

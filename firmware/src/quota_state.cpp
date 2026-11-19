@@ -85,6 +85,16 @@ bool parseQuotaPayload(const char *json, size_t len, QuotaState &out) {
       dst.status = parseStatus(p["status"], dst.remaining_pct);
     }
   }
+  JsonArray sess = oc["sessions"];
+  next.session_count = 0;
+  if (!sess.isNull()) {
+    for (JsonObject s : sess) {
+      if (next.session_count >= SESSIONS_MAX) break;
+      SessionState &d = next.sessions[next.session_count++];
+      copyName(d.title, sizeof(d.title), s["title"] | "?");
+      copyName(d.model, sizeof(d.model), s["model"] | "?");
+    }
+  }
 
   // Recompute overall locally so a stale/missing field can't lie to the LED.
   if (!next.oc_connected) {

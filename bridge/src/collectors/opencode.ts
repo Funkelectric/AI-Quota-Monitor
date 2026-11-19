@@ -246,12 +246,60 @@ export async function readQuotaShowFallback(timeoutMs = 20_000): Promise<QuotaPo
   return pools;
 }
 
+/** Recently ACTIVE sessions for the CYD 01 rotator: most-recent first.
+ * "Active" = touched in the last minutes (default 10). Old sessions that
+ * merely exist in the DB are not shown — otherwise the strip fills with
+ * stale entries and the pager (e.g. 3/4) suggests parallel work that
+ * isn't happening. */
+export function getRecentSessions(dbPath: string = getOpencodeDbPath(), limit = 4): { title: string; model: string }[] {
+  const activeMin = Math.max(1, Number(process.env.SESSION_ACTIVE_MIN ?? "10") || 10);
+  const cutoff = Date.now() - activeMin * 60 * 1000;
+  try {
+    if (!existsSync(dbPath)) return [];
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const rows = db
+        .prepare(
+          "SELECT title, model FROM session_v2 WHERE time_updated > ? ORDER BY time_updated DESC LIMIT ?",
+        )
+        .all(cutoff, limit) as { title: string | null; model: string | null }[];
+      return rows
+        .map((r) => {
+          // Pretty model name only: "muse-spark-1.3-contributor" -> "Muse Spark 1.3 Contributor".
+          // No provider prefix, no thinking-level variant.
+          let model = "?";
+          try {
+            const m = JSON.parse(r.model ?? "") as { id?: string };
+            const rawId = (m.id ?? "").trim() || "?";
+            model = rawId
+              .split("-")
+              .map((w) => (/^[a-z]+$/i.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+              .join(" ")
+              .slice(0, 31);
+          } catch {
+            model = String(r.model ?? "?").slice(0, 31);
+          }
+          return {
+            title: String(r.title ?? "untitled").slice(0, 23),
+            model,
+          };
+        })
+        .filter((s) => s.title || s.model);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
 export async function collectOpenCode(): Promise<OpenCodeBlock> {
   const now = Date.now();
   if (cache && now - cache.at < cacheTtlMs()) return cache.data;
 
   const dbPath = getOpencodeDbPath();
   const usage = await getTodayUsage(dbPath);
+  const sessions = getRecentSessions(dbPath);
 
   // Primary: live Console Go meters.
   try {
@@ -267,6 +315,7 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
           toPool("Go Week", go.weekly),
           toPool("Go Month", go.monthly),
         ],
+        sessions,
       };
       cache = { at: Date.now(), data };
       return data;
@@ -284,6 +333,7 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
         today_cost_usd: usage.cost,
         today_tokens_k: usage.tokens_k,
         providers: pools,
+        sessions,
         stale: true,
       };
       cache = { at: Date.now(), data };
@@ -299,6 +349,7 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
       ...cache.data,
       today_cost_usd: usage.cost,
       today_tokens_k: usage.tokens_k,
+      sessions: sessions.length > 0 ? sessions : cache.data.sessions,
       stale: true,
     };
     return stale;
@@ -308,6 +359,7 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
     today_cost_usd: usage.cost,
     today_tokens_k: usage.tokens_k,
     providers: [],
+    sessions,
     stale: true,
   };
 }
