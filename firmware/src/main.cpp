@@ -180,6 +180,34 @@ static void serialPump() {
 }
 
 static void buttonTick() {
+#ifdef TV154
+  // NM-TV-154: single capacitive touch key T9/GPIO32 (raw < 90 = pressed).
+  // Short tap = next screen (01<->02). Hold >5s = wipe WiFi + portal.
+  static bool s_tDown = false;
+  static unsigned long s_tMs = 0;
+  static bool s_tLong = false;
+  bool down = touchRead(PIN_TOUCH_T9) < TOUCH_THRESHOLD;
+  unsigned long now = millis();
+  if (down && !s_tDown) {
+    s_tDown = true;
+    s_tMs = now;
+    s_tLong = false;
+  } else if (down && s_tDown && !s_tLong && now - s_tMs > BUTTON_LONG_MS) {
+    s_tLong = true;
+    WiFi.disconnect(true, true);
+    NetConfig cfg = g_cfg;
+    // Blocking portal is intentional on explicit long-press only.
+    netEnsureWiFi(cfg, true, 0);
+    g_cfg = cfg;
+    g_lastPoll = 0;
+    g_lastAskPoll = 0;
+    ESP.restart();
+  } else if (!down && s_tDown) {
+    if (!s_tLong && (now - s_tMs > 50)) nextScreen();
+    s_tDown = false;
+  }
+#else
+  // CYD: BOOT button GPIO0, active LOW.
   bool down = digitalRead(PIN_BUTTON_BOOT) == LOW;
   unsigned long now = millis();
   if (down && !s_btnDown) {
@@ -216,11 +244,19 @@ static void buttonTick() {
     }
     s_btnDown = false;
   }
+#endif
 }
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
+#ifdef TV154
+  // No BOOT button on NM-TV-154: portal opens on first boot (no creds) or
+  // via 5s touch-hold wipe. Never force portal from a floating touch pin.
+  bool bootPortal = false;
+#else
   pinMode(PIN_BUTTON_BOOT, INPUT_PULLUP);
+  bool bootPortal = digitalRead(PIN_BUTTON_BOOT) == LOW;
+#endif
   configLoad(g_cfg);
   // Optional bearer for POST /api/ask/answer (AUDIT P3-17). Bake at build
   // time with -D CYD_TOKEN="..." (platformio.ini build_flags); unset = open.
@@ -234,7 +270,6 @@ void setup() {
   touchInit();
 
   WiFi.setAutoReconnect(true);
-  bool bootPortal = digitalRead(PIN_BUTTON_BOOT) == LOW;
   bool netUp = netEnsureWiFi(g_cfg, bootPortal);
   g_serialMode = !netUp;  // no WiFi -> listen on USB Serial
   if (netUp) { pollNow(); pollAskNow(); }

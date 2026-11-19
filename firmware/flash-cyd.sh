@@ -135,10 +135,8 @@ build_flags =
 
 ; NM-TV-154 port (1.54" 240x240 square, ESP32-D0, top button, no XPT2046).
 ; Screen scope: 01 QUOTA + 02 WINDOWS only. Bridge unchanged (same /api/quota).
-; HW PROBE REQUIRED before flashing on glass:
-;   - confirm panel driver (ST7789 assumed; GC9107 possible) + inversion/BGR
-;   - confirm TFT SPI pins below (placeholders = CYD map, almost certainly
-;     WRONG on TV-154) + BL pin, single-button GPIO, LED/LDR presence.
+; Pins verified against RockBase-lab/NM-TV-154 (ST7789 HSPI, BL GPIO19
+; active-low, LCD power GPIO21 active-low, touch T9/GPIO32, no MISO, no LDR/RGB).
 [env:tv154-st7789]
 platform = espressif32@6.8.1
 board = esp32dev
@@ -149,18 +147,21 @@ build_flags =
   -D USER_SETUP_LOADED=1
   -D ST7789_DRIVER=1
   -D TV154=1
+  -D CGRAM_OFFSET=1
+  -D USE_HSPI_PORT=1
   -D TFT_WIDTH=240
   -D TFT_HEIGHT=240
   -D TFT_MOSI=13
-  -D TFT_MISO=12
+  -D TFT_MISO=-1
   -D TFT_SCLK=14
   -D TFT_CS=15
   -D TFT_DC=2
   -D TFT_RST=-1
-  -D TFT_BL=21
-  -D TFT_BACKLIGHT_ON=1
+  -D TFT_BL=19
+  -D TFT_BACKLIGHT_ON=0
+  -D SPI_FREQUENCY=40000000
+  -D SPI_READ_FREQUENCY=20000000
   -D TFT_INVERSION_ON=1
-  -D SPI_FREQUENCY=27000000
   -D TOUCH_CS=-1
   -D LOAD_GLCD=1
   -D LOAD_FONT2=1
@@ -179,9 +180,23 @@ cat > include/config.h <<'EOF_CFG'
 #pragma once
 
 // Pin map for ESP32-2432S028R (NM-CYD), landscape 320x240.
-// TV154 NOTE: TFT/BTN/LED/LDR pins below are CYD placeholders. The TV-154
-// 240x240 panel + single top button use different GPIOs (TBD via HW probe).
-// Do not flash on glass until PIN_TFT_* / PIN_BUTTON_BOOT are verified.
+#ifdef TV154
+// NM-TV-154 (verified vs RockBase-lab/NM-TV-154): ST7789 240x240 on HSPI,
+// BL GPIO19 active-low, LCD power rail GPIO21 active-low, touch T9/GPIO32.
+// No MISO, no XPT2046, no RGB LED, no LDR.
+#define PIN_TFT_MOSI 13
+#define PIN_TFT_MISO -1
+#define PIN_TFT_SCLK 14
+#define PIN_TFT_CS   15
+#define PIN_TFT_DC    2
+#define PIN_TFT_RST  -1
+#define PIN_TFT_BL   19
+#define PIN_LCD_PWR  21
+#define PIN_TOUCH_T9 T9
+#define TOUCH_THRESHOLD 90
+#define HAS_LDR 0
+#define HAS_RGB 0
+#else
 #define PIN_TFT_MOSI 13
 #define PIN_TFT_MISO 12
 #define PIN_TFT_SCLK 14
@@ -211,6 +226,7 @@ cat > include/config.h <<'EOF_CFG'
 
 #define PIN_LDR       34
 #define PIN_BUTTON_BOOT 0
+#endif // TV154 / CYD pin map
 
 // Thresholds mirror bridge/types.ts
 #define QUOTA_OK_MIN   50
@@ -311,9 +327,9 @@ cat > include/ui_theme.h <<'EOF_THEME'
 
 // Display rotation: 3 = landscape 180° (USB port on the LEFT).
 // 1 = landscape (USB on the right). Touch mapping flips to match.
-// TV154: square 240x240, rotation 1 tentative (pick by cable ergonomics).
+// TV154: square 240x240, rotation 0 matches stock/demo orientation.
 #ifdef TV154
-#define DISPLAY_ROTATION 1
+#define DISPLAY_ROTATION 0
 #else
 #define DISPLAY_ROTATION 3
 #endif
@@ -690,15 +706,24 @@ static void ledWrite(uint8_t pin, uint8_t brightness) {
 }
 
 void ledInit() {
+#ifdef TV154
+  // No RGB LED on NM-TV-154: nothing to init.
+  return;
+#else
   pinMode(PIN_LED_R, OUTPUT);
   pinMode(PIN_LED_G, OUTPUT);
   pinMode(PIN_LED_B, OUTPUT);
   ledWrite(PIN_LED_R, 0);
   ledWrite(PIN_LED_G, 0);
   ledWrite(PIN_LED_B, 0);
+#endif
 }
 
 void ledTick(uint8_t status) {
+#ifdef TV154
+  (void)status;
+  return;
+#else
   unsigned long now = millis();
   switch (status) {
     case ST_OK:
@@ -735,21 +760,36 @@ void ledTick(uint8_t status) {
       }
       break;
   }
+#endif
 }
 
 static uint8_t g_bl = 255;
 
 void backlightInit() {
+#ifdef TV154
+  // NM-TV-154 backlight GPIO19 is active-low: LOW = full brightness.
+  // No LDR on this board, so fixed full-on (tick is a no-op).
+  pinMode(PIN_TFT_BL, OUTPUT);
+  digitalWrite(PIN_TFT_BL, LOW);
+#else
   pinMode(PIN_TFT_BL, OUTPUT);
   analogWrite(PIN_TFT_BL, g_bl);
+#endif
 }
 
 void backlightSet(uint8_t duty) {
   g_bl = duty;
+#ifdef TV154
+  analogWrite(PIN_TFT_BL, (uint8_t)(255 - duty));  // active-low: invert
+#else
   analogWrite(PIN_TFT_BL, duty);
+#endif
 }
 
 void backlightTick() {
+#ifdef TV154
+  return;  // no LDR on NM-TV-154: brightness fixed at init
+#else
   // LDR on GPIO34: brighter room -> higher ADC -> brighter backlight.
   // Clamp to a readable floor so the screen never goes fully dark.
   // AUDIT H5: EMA + deadband + fast slew. Raw single-sample stepped ±1/tick
@@ -773,6 +813,7 @@ void backlightTick() {
   if (next < 40) next = 40;
   g_bl = (uint8_t)next;
   analogWrite(PIN_TFT_BL, g_bl);
+#endif
 }
 EOF_LED
 
@@ -1029,6 +1070,13 @@ static XPT2046_Touchscreen g_touch(PIN_TOUCH_CS, PIN_TOUCH_IRQ);
 #endif
 
 void displayInit() {
+#ifdef TV154
+  // NM-TV-154: LCD power rail MUST be enabled before init, else black screen.
+  // (RockBase-lab/NM-TV-154: GPIO21 LOW = rail enabled.)
+  pinMode(PIN_LCD_PWR, OUTPUT);
+  digitalWrite(PIN_LCD_PWR, LOW);
+  delay(50);
+#endif
   g_tft.init();
   g_tft.setRotation(DISPLAY_ROTATION);  // 3 = USB port on the LEFT
   g_tft.fillScreen(TFT_BLACK);
@@ -1959,6 +2007,34 @@ static void serialPump() {
 }
 
 static void buttonTick() {
+#ifdef TV154
+  // NM-TV-154: single capacitive touch key T9/GPIO32 (raw < 90 = pressed).
+  // Short tap = next screen (01<->02). Hold >5s = wipe WiFi + portal.
+  static bool s_tDown = false;
+  static unsigned long s_tMs = 0;
+  static bool s_tLong = false;
+  bool down = touchRead(PIN_TOUCH_T9) < TOUCH_THRESHOLD;
+  unsigned long now = millis();
+  if (down && !s_tDown) {
+    s_tDown = true;
+    s_tMs = now;
+    s_tLong = false;
+  } else if (down && s_tDown && !s_tLong && now - s_tMs > BUTTON_LONG_MS) {
+    s_tLong = true;
+    WiFi.disconnect(true, true);
+    NetConfig cfg = g_cfg;
+    // Blocking portal is intentional on explicit long-press only.
+    netEnsureWiFi(cfg, true, 0);
+    g_cfg = cfg;
+    g_lastPoll = 0;
+    g_lastAskPoll = 0;
+    ESP.restart();
+  } else if (!down && s_tDown) {
+    if (!s_tLong && (now - s_tMs > 50)) nextScreen();
+    s_tDown = false;
+  }
+#else
+  // CYD: BOOT button GPIO0, active LOW.
   bool down = digitalRead(PIN_BUTTON_BOOT) == LOW;
   unsigned long now = millis();
   if (down && !s_btnDown) {
@@ -1995,11 +2071,19 @@ static void buttonTick() {
     }
     s_btnDown = false;
   }
+#endif
 }
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
+#ifdef TV154
+  // No BOOT button on NM-TV-154: portal opens on first boot (no creds) or
+  // via 5s touch-hold wipe. Never force portal from a floating touch pin.
+  bool bootPortal = false;
+#else
   pinMode(PIN_BUTTON_BOOT, INPUT_PULLUP);
+  bool bootPortal = digitalRead(PIN_BUTTON_BOOT) == LOW;
+#endif
   configLoad(g_cfg);
   // Optional bearer for POST /api/ask/answer (AUDIT P3-17). Bake at build
   // time with -D CYD_TOKEN="..." (platformio.ini build_flags); unset = open.
@@ -2013,7 +2097,6 @@ void setup() {
   touchInit();
 
   WiFi.setAutoReconnect(true);
-  bool bootPortal = digitalRead(PIN_BUTTON_BOOT) == LOW;
   bool netUp = netEnsureWiFi(g_cfg, bootPortal);
   g_serialMode = !netUp;  // no WiFi -> listen on USB Serial
   if (netUp) { pollNow(); pollAskNow(); }

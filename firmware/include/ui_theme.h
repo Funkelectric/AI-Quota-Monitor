@@ -17,9 +17,9 @@
 
 // Display rotation: 3 = landscape 180° (USB port on the LEFT).
 // 1 = landscape (USB on the right). Touch mapping flips to match.
-// TV154: square 240x240, rotation 1 tentative (pick by cable ergonomics).
+// TV154: square 240x240, rotation 0 matches stock/demo orientation.
 #ifdef TV154
-#define DISPLAY_ROTATION 1
+#define DISPLAY_ROTATION 0
 #else
 #define DISPLAY_ROTATION 3
 #endif

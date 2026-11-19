@@ -1,9 +1,23 @@
 #pragma once
 
 // Pin map for ESP32-2432S028R (NM-CYD), landscape 320x240.
-// TV154 NOTE: TFT/BTN/LED/LDR pins below are CYD placeholders. The TV-154
-// 240x240 panel + single top button use different GPIOs (TBD via HW probe).
-// Do not flash on glass until PIN_TFT_* / PIN_BUTTON_BOOT are verified.
+#ifdef TV154
+// NM-TV-154 (verified vs RockBase-lab/NM-TV-154): ST7789 240x240 on HSPI,
+// BL GPIO19 active-low, LCD power rail GPIO21 active-low, touch T9/GPIO32.
+// No MISO, no XPT2046, no RGB LED, no LDR.
+#define PIN_TFT_MOSI 13
+#define PIN_TFT_MISO -1
+#define PIN_TFT_SCLK 14
+#define PIN_TFT_CS   15
+#define PIN_TFT_DC    2
+#define PIN_TFT_RST  -1
+#define PIN_TFT_BL   19
+#define PIN_LCD_PWR  21
+#define PIN_TOUCH_T9 T9
+#define TOUCH_THRESHOLD 90
+#define HAS_LDR 0
+#define HAS_RGB 0
+#else
 #define PIN_TFT_MOSI 13
 #define PIN_TFT_MISO 12
 #define PIN_TFT_SCLK 14
@@ -33,6 +47,7 @@
 
 #define PIN_LDR       34
 #define PIN_BUTTON_BOOT 0
+#endif // TV154 / CYD pin map
 
 // Thresholds mirror bridge/types.ts
 #define QUOTA_OK_MIN   50

@@ -13,6 +13,13 @@ static XPT2046_Touchscreen g_touch(PIN_TOUCH_CS, PIN_TOUCH_IRQ);
 #endif
 
 void displayInit() {
+#ifdef TV154
+  // NM-TV-154: LCD power rail MUST be enabled before init, else black screen.
+  // (RockBase-lab/NM-TV-154: GPIO21 LOW = rail enabled.)
+  pinMode(PIN_LCD_PWR, OUTPUT);
+  digitalWrite(PIN_LCD_PWR, LOW);
+  delay(50);
+#endif
   g_tft.init();
   g_tft.setRotation(DISPLAY_ROTATION);  // 3 = USB port on the LEFT
   g_tft.fillScreen(TFT_BLACK);
