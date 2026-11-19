@@ -20,7 +20,13 @@ static const char *screenSection(uint8_t scr) {
   // AUDIT H3: ASCII '-' only. TFT_eSPI bitmap fonts (font1/font2) are 7-bit;
   // UTF-8 middle-dot renders as two garbage glyphs on-device.
   switch (scr) {
+#ifdef TV154
+    // 240px: "02 - PROVIDERS" (130px spaced) collides with the clock cluster;
+    // "02 - WINDOWS" (114px) keeps an 8px gap (see mock_tv154_render.py audit).
+    case SCR_PROVIDERS: return "02 - WINDOWS";
+#else
     case SCR_PROVIDERS: return "02 - PROVIDERS";
+#endif
     case SCR_SCOPE: return "03 - SCOPE";
     case SCR_CLOCK: return "04 - STANDBY";
     case SCR_ASK: return "05 - ASK";
@@ -131,7 +137,9 @@ static void rightPair(int y, const PoolState &p, int right) {
 }
 
 // Centered value: big % near-center, countdown right-aligned + readable.
-// % anchors at x=180 (not 160) so long "GO MONTH" labels never overlap.
+// CYD: % anchors at x=180 (not 160) so long "GO MONTH" labels never overlap.
+// TV154 240px: free zone is label-end (~92) .. countdown-start (~174),
+// so anchor at 132 (see mock_tv154_render.py audit).
 static void centerPair(int y, const PoolState &p, int right) {
   TFT_eSPI &t = display();
   char cd[12];
@@ -141,7 +149,11 @@ static void centerPair(int y, const PoolState &p, int right) {
   t.setTextFont(4);
   t.setTextColor(statusColor(p.status), COLOR_BG);
   int pw = t.textWidth(pct);
+#ifdef TV154
+  t.setCursor(TV154_CENTER_X - pw / 2, y);
+#else
   t.setCursor(180 - pw / 2, y);
+#endif
   t.print(pct);
   t.setTextFont(2);
   t.setTextColor(COLOR_TEXT, COLOR_BG);
@@ -162,7 +174,11 @@ static void readoutStrip(const QuotaState &q) {
   if (q.oc_count) fmtCountdown(minReset(q), v2, sizeof(v2));
   else snprintf(v2, sizeof(v2), "--");
 
+#ifdef TV154
+  const int c0 = TV154_C0, c1 = TV154_C1, c2 = TV154_C2;
+#else
   const int c0 = MARGIN + 4, c1 = 118, c2 = 216;
+#endif
   tiny("TOKENS", c0, y + 5, COLOR_DIM, COLOR_BG);
   tiny("COST", c1, y + 5, COLOR_DIM, COLOR_BG);
   tiny("NEXT", c2, y + 5, COLOR_DIM, COLOR_BG);
@@ -175,14 +191,24 @@ static void readoutStrip(const QuotaState &q) {
   t.setTextColor(q.fresh ? COLOR_ICE : COLOR_DIM, COLOR_BG);
   t.setCursor(c2, y + 14);
   t.print(v2);
+#ifdef TV154
+  t.drawFastVLine(TV154_DIV0, y + 4, 22, COLOR_EDGE);
+  t.drawFastVLine(TV154_DIV1, y + 4, 22, COLOR_EDGE);
+#else
   t.drawFastVLine(110, y + 4, 22, COLOR_EDGE);
   t.drawFastVLine(208, y + 4, 22, COLOR_EDGE);
+#endif
 }
 
 // Hero quota curve: cosine-interpolated area through the window levels.
-// Panel geometry (320x240): x 8..312, y 36..172.
+// Panel geometry 320x240: x 8..312, y 36..172. TV154 240x240: x 8..231.
+#ifdef TV154
+#define HERO_X0 8
+#define HERO_X1 TV154_HERO_X1
+#else
 #define HERO_X0 8
 #define HERO_X1 312
+#endif
 #define HERO_Y0 36
 #define HERO_Y1 172
 #define HERO_STEP 2
@@ -285,6 +311,38 @@ static void drawHeroPanel(const QuotaState &q) {
 
   // Markers + band labels.
   t.setTextFont(2);
+#ifdef TV154
+  // 240px: marker slots are 74px but labels are 60-86px, so neighbours
+  // collide. Try below-marker first (v1 law), flip above on bottom-clip
+  // OR intersection with an already placed label (see mock_tv154_render.py).
+  int plx[POOLS_MAX], plx1[POOLS_MAX], ply[POOLS_MAX], ply1[POOLS_MAX];
+  for (uint8_t i = 0; i < n; i++) {
+    int mx = (int)(HERO_X0 + (i + 0.5f) * pw / n);
+    int my = (int)((HERO_Y1 - 6) - constrain(levels[i], 0, 100) / 100.0f * (ph - 30));
+    t.fillCircle(mx, my, 3, COLOR_BG);
+    t.drawCircle(mx, my, 3, COLOR_ICE);
+    char lbl[28];
+    snprintf(lbl, sizeof(lbl), "%s %.1f%%", shortName(q.oc[i].name), levels[i]);
+    int lw = t.textWidth(lbl);
+    int lx = constrain(mx - lw / 2, HERO_X0 + 3, HERO_X1 - 3 - lw);
+    int below = my + 7, above = my - 22;
+    int ly = below;
+    if (ly + 16 > HERO_Y1 - 3) ly = above;
+    // Flip to whichever side avoids already-placed boxes.
+    bool hit = false;
+    for (uint8_t j = 0; j < i; j++) {
+      if (lx < plx1[j] && lx + lw > plx[j] && ly < ply1[j] && ly + 16 > ply[j]) { hit = true; break; }
+    }
+    if (hit) {
+      int alt = (ly == below) ? above : below;
+      if (alt >= HERO_Y0 + 2 && alt + 16 <= HERO_Y1 - 2) ly = alt;
+    }
+    plx[i] = lx; plx1[i] = lx + lw; ply[i] = ly; ply1[i] = ly + 16;
+    t.setTextColor(COLOR_TEXT, COLOR_BG);
+    t.setCursor(lx, ly);
+    t.print(lbl);
+  }
+#else
   for (uint8_t i = 0; i < n; i++) {
     int mx = (int)(HERO_X0 + (i + 0.5f) * pw / n);
     int my = (int)((HERO_Y1 - 6) - constrain(levels[i], 0, 100) / 100.0f * (ph - 30));
@@ -302,6 +360,7 @@ static void drawHeroPanel(const QuotaState &q) {
     t.setCursor(lx, ly);
     t.print(lbl);
   }
+#endif
 }
 
 // Session rotator strip: conversation title + model between hero graph and
@@ -342,8 +401,13 @@ void drawOverview(const QuotaState &q, bool netUp, bool serialMode) {
   header(q, netUp, serialMode);
 
   if (!q.oc_connected || q.oc_count == 0) {
+#ifdef TV154
+    spaced("WAITING FOR BRIDGE", 20, 100, COLOR_DIM, COLOR_BG);
+    tiny("CHECK WIFI + PORT 3847", 48, 124, COLOR_DIM, COLOR_BG);
+#else
     spaced("WAITING FOR BRIDGE", 60, 100, COLOR_DIM, COLOR_BG);
     tiny("CHECK WIFI + PORT 3847", 88, 124, COLOR_DIM, COLOR_BG);
+#endif
     readoutStrip(q);
     return;
   }
@@ -358,7 +422,11 @@ void drawProviders(const QuotaState &q, bool netUp, bool serialMode) {
   header(q, netUp, serialMode);
 
   if (!q.oc_connected || q.oc_count == 0) {
+#ifdef TV154
+    spaced("NO PROVIDERS", 56, 110, COLOR_DIM, COLOR_BG);
+#else
     spaced("NO PROVIDERS", 96, 110, COLOR_DIM, COLOR_BG);
+#endif
     return;
   }
   int y = HEADER_H + 10;

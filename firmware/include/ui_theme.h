@@ -17,14 +17,37 @@
 
 // Display rotation: 3 = landscape 180° (USB port on the LEFT).
 // 1 = landscape (USB on the right). Touch mapping flips to match.
+// TV154: square 240x240, rotation 1 tentative (pick by cable ergonomics).
+#ifdef TV154
+#define DISPLAY_ROTATION 1
+#else
 #define DISPLAY_ROTATION 3
+#endif
 
-// Layout (landscape 320x240).
+// Layout (landscape 320x240; TV154: square 240x240).
+#ifdef TV154
+#define LAYOUT_W        240
+#define LAYOUT_H        240
+#else
 #define LAYOUT_W        320
 #define LAYOUT_H        240
+#endif
 #define HEADER_H        28
 #define MARGIN          8
 #define CARD_R          6
+
+// TV154 240px geometry (from mock_tv154_render.py audit):
+// - hero panel x 8..231 (was 8..311), value anchor 180->132,
+// - readoutStrip cols [12,118,216]->[12,92,168], dividers 110/208->84/164.
+#ifdef TV154
+#define TV154_HERO_X1   231
+#define TV154_CENTER_X  132
+#define TV154_C0        12
+#define TV154_C1        92
+#define TV154_C2        168
+#define TV154_DIV0      84
+#define TV154_DIV1      164
+#endif
 
 // Status -> color helper (implemented in screens.cpp).
 uint16_t statusColor(uint8_t status);

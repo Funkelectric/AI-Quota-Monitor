@@ -1,12 +1,16 @@
 #include "display.h"
 #include <SPI.h>
-#include <XPT2046_Touchscreen.h>
 #include "config.h"
 #include "ui_theme.h"
+#if HAS_XPT2046
+#include <XPT2046_Touchscreen.h>
+#endif
 
 static TFT_eSPI g_tft;
+#if HAS_XPT2046
 static SPIClass g_touchSPI(VSPI);
 static XPT2046_Touchscreen g_touch(PIN_TOUCH_CS, PIN_TOUCH_IRQ);
+#endif
 
 void displayInit() {
   g_tft.init();
@@ -17,13 +21,25 @@ void displayInit() {
 TFT_eSPI &display() { return g_tft; }
 
 void touchInit() {
+#if !HAS_XPT2046
+  // TV-154: single top button, no XY touch. Kept as no-op so main.cpp
+  // compiles unchanged; navigation falls back to the BOOT/button path.
+  return;
+#else
   // Raw touch frame stays fixed (rotation 1); the 180° flip is applied
   // in touchTap so it stays exact regardless of calibration asymmetry.
   g_touchSPI.begin(PIN_TOUCH_CLK, PIN_TOUCH_MISO, PIN_TOUCH_MOSI, PIN_TOUCH_CS);
   g_touch.begin(g_touchSPI);
   g_touch.setRotation(1);
+#endif
 }
 
+#if !HAS_XPT2046
+bool touchTap(uint16_t &x, uint16_t &y) {
+  (void)x; (void)y;
+  return false;
+}
+#else
 static bool s_down = false;
 static unsigned long s_downMs = 0;
 static TS_Point s_downPt;
@@ -60,3 +76,4 @@ bool touchTap(uint16_t &x, uint16_t &y) {
   }
   return false;
 }
+#endif

@@ -1,6 +1,9 @@
 #pragma once
 
 // Pin map for ESP32-2432S028R (NM-CYD), landscape 320x240.
+// TV154 NOTE: TFT/BTN/LED/LDR pins below are CYD placeholders. The TV-154
+// 240x240 panel + single top button use different GPIOs (TBD via HW probe).
+// Do not flash on glass until PIN_TFT_* / PIN_BUTTON_BOOT are verified.
 #define PIN_TFT_MOSI 13
 #define PIN_TFT_MISO 12
 #define PIN_TFT_SCLK 14
@@ -47,7 +50,14 @@
 #define SCR_SCOPE     2
 #define SCR_CLOCK     3
 #define SCR_ASK       4
+#ifdef TV154
+// TV-154 port scope: 01 QUOTA + 02 WINDOWS only (240x240, single button).
+#define SCR_COUNT     2
+#define HAS_XPT2046   0
+#else
 #define SCR_COUNT     5
+#define HAS_XPT2046   1
+#endif
 
 // Network / bridge defaults
 #define WIFI_AP_NAME "NM-Quota-Setup"

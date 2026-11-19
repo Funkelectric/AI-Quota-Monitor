@@ -45,6 +45,10 @@ static size_t s_lineLen = 0;
 
 static void render() {
   bool netUp = netIsConnected();
+#ifdef TV154
+  // 01+02 only; any stray ASK/other id falls back to overview.
+  if (g_screen >= SCR_COUNT) g_screen = SCR_OVERVIEW;
+#endif
   switch (g_screen) {
     case SCR_PROVIDERS: drawProviders(g_state, netUp, g_serialMode); break;
     case SCR_SCOPE: drawScope(g_state, netUp, g_serialMode); break;
@@ -66,7 +70,12 @@ static void syncBadge(const char *msg) {
 }
 
 static void skipAskIfEmpty(uint8_t &scr) {
+#ifdef TV154
+  // TV-154 scope is 01+02 only: ASK never shown, clamp any stray SCR_ASK.
+  if (scr >= SCR_COUNT) scr = SCR_OVERVIEW;
+#else
   if (scr == SCR_ASK && !g_ask.pending) scr = SCR_OVERVIEW;
+#endif
 }
 
 static void nextScreen() {
@@ -131,10 +140,15 @@ static void handleSerialLine() {
       wasId[sizeof(wasId) - 1] = '\0';
       g_ask = next;
       g_serialMode = true;
+#ifdef TV154
+      // TV-154 01+02 port: no ASK screen, never auto-popup.
+      skipAskIfEmpty(g_screen);
+#else
       if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
         g_screen = SCR_ASK;
       }
       skipAskIfEmpty(g_screen);
+#endif
       render();
       return;
     }
@@ -240,6 +254,10 @@ static void pollAskNow() {
   strncpy(wasId, g_ask.id, sizeof(wasId) - 1);
   wasId[sizeof(wasId) - 1] = '\0';
   g_ask = next;
+#ifdef TV154
+  // TV-154 01+02 port: keep quota state fresh, never leave 01/02 for ASK.
+  skipAskIfEmpty(g_screen);
+#else
   if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
     g_screen = SCR_ASK;  // auto-popup on new question
     render();
@@ -250,6 +268,7 @@ static void pollAskNow() {
     render();
   }
   skipAskIfEmpty(g_screen);
+#endif
 }
 
 // ASK button hit-test. Boxes mirror drawAsk()/mock ASK_BTNS_*.
