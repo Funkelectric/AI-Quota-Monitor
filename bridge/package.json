@@ -1,0 +1,26 @@
+{
+  "name": "cyd-quota-bridge",
+  "version": "0.1.0",
+  "description": "Local quota bridge for Antigravity IDE + OpenCode -> NM-CYD dashboard",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "start:mock": "node dist/index.js --mock"
+  },
+  "dependencies": {
+    "bonjour-service": "^1.3.0",
+    "dotenv": "^16.4.5",
+    "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  },
+  "allowScripts": {
+    "@serialport/bindings-cpp@13.0.0": true,
+    "esbuild@0.28.2": true
+  }
+}

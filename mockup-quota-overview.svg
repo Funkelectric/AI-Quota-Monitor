@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720">
+  <defs>
+    <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A5A8C" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#2A5A8C" stop-opacity="0.05"/>
+    </linearGradient>
+    <linearGradient id="meter" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F85149"/>
+      <stop offset="0.45" stop-color="#D29922"/>
+      <stop offset="1" stop-color="#3FB950"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#1E3A55"/>
+      <stop offset="1" stop-color="#7FD4FF"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7FD4FF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#7FD4FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="720" fill="#07090D"/>
+  <rect x="12" y="12" width="936" height="696" rx="26" fill="#12161D" stroke="#2A3340" stroke-width="2"/>
+
+  <!-- header -->
+  <rect x="44" y="52" width="32" height="4" fill="#7FD4FF"/>
+  <text x="88" y="62" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="26" letter-spacing="4" fill="#8B949E">01 · QUOTA</text>
+  <circle cx="400" cy="54" r="16" fill="url(#glow)"/>
+  <circle cx="400" cy="54" r="7" fill="#7FD4FF"/>
+  <text x="480" y="62" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="26" letter-spacing="4" fill="#C9D1D9">SYNCED</text>
+  <text x="924" y="62" text-anchor="end" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="26" letter-spacing="4" fill="#8B949E">GO · 3 WIN</text>
+  <line x1="36" y1="96" x2="924" y2="96" stroke="#2A3340" stroke-width="2"/>
+
+  <!-- hero panel -->
+  <rect x="36" y="120" width="888" height="400" rx="10" fill="#0B0E13" stroke="#2A3340" stroke-width="2"/>
+  <g stroke="#1B2230" stroke-width="2">
+    <line x1="147" y1="120" x2="147" y2="520"/><line x1="258" y1="120" x2="258" y2="520"/>
+    <line x1="369" y1="120" x2="369" y2="520"/><line x1="480" y1="120" x2="480" y2="520"/>
+    <line x1="591" y1="120" x2="591" y2="520"/><line x1="702" y1="120" x2="702" y2="520"/>
+    <line x1="813" y1="120" x2="813" y2="520"/>
+    <line x1="36" y1="200" x2="924" y2="200"/><line x1="36" y1="280" x2="924" y2="280"/>
+    <line x1="36" y1="360" x2="924" y2="360"/><line x1="36" y1="440" x2="924" y2="440"/>
+  </g>
+  <!-- quota area -->
+  <path d="M36,460 C120,440 170,300 260,290 C350,280 400,390 490,380 C580,370 640,250 730,245 C810,240 870,300 924,295 L924,520 L36,520 Z" fill="url(#area)"/>
+  <path d="M36,460 C120,440 170,300 260,290 C350,280 400,390 490,380 C580,370 640,250 730,245 C810,240 870,300 924,295" fill="none" stroke="#7FD4FF" stroke-width="3"/>
+  <!-- band markers + labels -->
+  <circle cx="260" cy="290" r="8" fill="#0B0E13" stroke="#7FD4FF" stroke-width="3"/>
+  <circle cx="490" cy="380" r="8" fill="#0B0E13" stroke="#7FD4FF" stroke-width="3"/>
+  <circle cx="730" cy="245" r="8" fill="#0B0E13" stroke="#7FD4FF" stroke-width="3"/>
+  <text x="260" y="250" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="24" letter-spacing="2" fill="#C9D1D9">5H 99.7%</text>
+  <text x="490" y="340" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="24" letter-spacing="2" fill="#C9D1D9">WEEK 92.4%</text>
+  <text x="730" y="205" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="24" letter-spacing="2" fill="#C9D1D9">MONTH 87.7%</text>
+
+  <!-- WINDOWS inset -->
+  <rect x="60" y="400" width="150" height="96" rx="6" fill="#0B0E13" stroke="#2A3340" stroke-width="2"/>
+  <text x="72" y="420" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="16" letter-spacing="3" fill="#8B949E">WINDOWS</text>
+  <rect x="84" y="432" width="22" height="50" fill="url(#bar)"/>
+  <rect x="114" y="438" width="22" height="44" fill="url(#bar)"/>
+  <rect x="144" y="442" width="22" height="40" fill="url(#bar)"/>
+
+  <!-- SCOPE inset -->
+  <rect x="734" y="366" width="166" height="130" rx="6" fill="#0B0E13" stroke="#2A3340" stroke-width="2"/>
+  <text x="746" y="386" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="16" letter-spacing="3" fill="#8B949E">SCOPE</text>
+  <line x1="817" y1="400" x2="817" y2="482" stroke="#2A3340" stroke-width="2"/>
+  <line x1="776" y1="441" x2="858" y2="441" stroke="#2A3340" stroke-width="2"/>
+  <circle cx="817" cy="441" r="34" fill="none" stroke="#2A3340" stroke-width="3"/>
+  <circle cx="817" cy="407" r="4" fill="#3FB950"/>
+  <circle cx="851" cy="441" r="4" fill="#3FB950"/>
+  <circle cx="817" cy="475" r="4" fill="#3FB950"/>
+  <circle cx="783" cy="441" r="4" fill="#D29922"/>
+  <circle cx="817" cy="441" r="5" fill="#F0F6FC"/>
+
+  <!-- readout strip -->
+  <line x1="36" y1="572" x2="924" y2="572" stroke="#2A3340" stroke-width="2"/>
+  <g font-family="ui-monospace,Menlo,Consolas,monospace">
+    <text x="60" y="596" font-size="18" letter-spacing="3" fill="#8B949E">TOKENS TODAY</text>
+    <text x="60" y="638" font-size="42" fill="#F0F6FC">14.9k</text>
+    <text x="300" y="596" font-size="18" letter-spacing="3" fill="#8B949E">COST</text>
+    <text x="300" y="638" font-size="42" fill="#F0F6FC">$0.00</text>
+    <text x="520" y="596" font-size="18" letter-spacing="3" fill="#8B949E">NEXT RESET</text>
+    <text x="520" y="638" font-size="42" fill="#F0F6FC">4H 31M</text>
+    <text x="740" y="596" font-size="18" letter-spacing="3" fill="#8B949E">STATUS</text>
+    <text x="740" y="638" font-size="42" fill="#3FB950">OK</text>
+  </g>
+  <rect x="740" y="646" width="160" height="8" rx="4" fill="url(#meter)"/>
+  <rect x="872" y="642" width="5" height="16" fill="#F0F6FC"/>
+</svg>

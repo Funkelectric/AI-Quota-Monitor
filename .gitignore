@@ -1,0 +1,7 @@
+node_modules/
+bridge/dist/
+firmware/.pio/
+*.log
+__pycache__/
+.DS_Store
+.env

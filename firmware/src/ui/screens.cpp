@@ -1,0 +1,443 @@
+#include "screens.h"
+#include "display.h"
+#include "ui_theme.h"
+#include "config.h"
+#include <math.h>
+
+uint16_t statusColor(uint8_t status) {
+  switch (status) {
+    case ST_OK: return COLOR_GREEN;
+    case ST_WARN: return COLOR_AMBER;
+    case ST_CRIT: return COLOR_RED;
+    default: return COLOR_BLUE;
+  }
+}
+
+static uint16_t darken(uint16_t c) { return ((c >> 1) & 0x7BEF); }
+
+static const char *screenSection(uint8_t scr) {
+  switch (scr) {
+    case SCR_PROVIDERS: return "02 · PROVIDERS";
+    case SCR_SCOPE: return "03 · SCOPE";
+    case SCR_CLOCK: return "04 · STANDBY";
+    default: return "01 · QUOTA";
+  }
+}
+extern uint8_t g_screen;  // owned by main.cpp
+
+// Letterspaced micro label, analyzer-style.
+static void spaced(const char *s, int x, int y, uint16_t color, uint16_t bg, uint8_t tracking = 2) {
+  TFT_eSPI &t = display();
+  t.setTextFont(2);
+  t.setTextColor(color, bg);
+  int cx = x;
+  for (const char *c = s; *c; c++) {
+    char b[2] = {*c, 0};
+    t.setCursor(cx, y);
+    t.print(b);
+    cx += t.textWidth(b) + tracking;
+  }
+}
+
+static void tiny(const char *s, int x, int y, uint16_t color, uint16_t bg) {
+  TFT_eSPI &t = display();
+  t.setTextFont(1);
+  t.setTextColor(color, bg);
+  t.setCursor(x, y);
+  t.print(s);
+}
+
+static void header(const QuotaState &q, bool netUp, bool serialMode) {
+  TFT_eSPI &t = display();
+  t.setTextSize(1);
+  t.setTextDatum(TL_DATUM);
+  t.fillRect(0, 0, LAYOUT_W, HEADER_H, COLOR_CARD);
+  spaced(screenSection(g_screen), 10, 6, COLOR_DIM, COLOR_CARD);
+
+  uint16_t dot;
+  const char *live;
+  if (!q.fresh || !q.oc_connected) { dot = COLOR_DIM; live = "----"; }
+  else if (q.oc_stale) { dot = COLOR_AMBER; live = "STALE"; }
+  else { dot = COLOR_ICE; live = "LIVE"; }
+  const char *link = serialMode ? "USB" : (netUp ? "WIFI" : "--");
+  char clk[16];
+  struct tm tm;
+  if (getLocalTime(&tm, 0)) {
+    snprintf(clk, sizeof(clk), "%02d:%02d", tm.tm_hour, tm.tm_min);
+  } else if (q.fresh) {
+    snprintf(clk, sizeof(clk), "-%lus", (millis() - q.updated_ms) / 1000);
+  } else {
+    snprintf(clk, sizeof(clk), "--:--");
+  }
+
+  // Right cluster packed from the edge: LIVE badge, link, clock. Never overlaps.
+  t.setTextFont(2);
+  int cx = LAYOUT_W - 10;
+  t.setTextColor(dot, COLOR_CARD);
+  int tw = t.textWidth(live);
+  t.setCursor(cx - tw, 6);
+  t.print(live);
+  t.fillCircle(cx - tw - 8, HEADER_H / 2, 4, dot);
+  cx -= tw + 18;
+  t.setTextColor(COLOR_DIM, COLOR_CARD);
+  tw = t.textWidth(link);
+  t.setCursor(cx - tw, 6);
+  t.print(link);
+  cx -= tw + 8;
+  tw = t.textWidth(clk);
+  t.setCursor(cx - tw, 6);
+  t.print(clk);
+  t.drawFastHLine(0, HEADER_H, LAYOUT_W, COLOR_EDGE);
+}
+
+// Gradient meter bar with a white threshold marker at 20%.
+static void meterBar(int x, int y, int w, int h, float pct, uint8_t status) {
+  TFT_eSPI &t = display();
+  t.drawRoundRect(x, y, w, h, 3, COLOR_EDGE);
+  t.fillRoundRect(x + 1, y + 1, w - 2, h - 2, 2, COLOR_BG);
+  float c = constrain(pct, 0, 100);
+  int fill = (int)((c / 100.0f) * (w - 4));
+  if (fill > 0) {
+    uint16_t col = statusColor(status);
+    t.fillRectHGradient(x + 2, y + 2, fill, h - 4, darken(col), col);
+  }
+  // crit-threshold marker
+  int mx = x + 2 + (int)(0.2f * (w - 4));
+  t.drawFastVLine(mx, y + 1, h - 2, COLOR_TEXT);
+}
+
+// Right-aligned value pair: big % colored + countdown dim.
+static void rightPair(int y, const PoolState &p, int right) {
+  TFT_eSPI &t = display();
+  char cd[12];
+  fmtCountdown(p.reset_in_sec, cd, sizeof(cd));
+  char pct[10];
+  snprintf(pct, sizeof(pct), "%.1f", p.remaining_pct);
+  t.setTextFont(4);
+  t.setTextColor(statusColor(p.status), COLOR_BG);
+  int pw = t.textWidth(pct);
+  t.setCursor(right - pw, y);
+  t.print(pct);
+  t.setTextFont(2);
+  t.setTextColor(COLOR_DIM, COLOR_BG);
+  t.setCursor(right - pw + 2, y + 26);
+  t.print("%");
+  t.setCursor(right - 62, y + 26);
+  t.print(cd);
+}
+
+// Bottom readout strip: TOKENS | COST | NEXT, EBU-style.
+static void readoutStrip(const QuotaState &q) {
+  TFT_eSPI &t = display();
+  const int y = LAYOUT_H - 30;
+  t.drawFastHLine(MARGIN, y, LAYOUT_W - 2 * MARGIN, COLOR_EDGE);
+  char v0[16], v1[16], v2[16];
+  if (q.oc_tokens_k >= 1000) snprintf(v0, sizeof(v0), "%.1fM", q.oc_tokens_k / 1000.0f);
+  else snprintf(v0, sizeof(v0), "%.0fk", q.oc_tokens_k);
+  snprintf(v1, sizeof(v1), "$%.2f", q.oc_cost);
+  if (q.oc_count) fmtCountdown(minReset(q), v2, sizeof(v2));
+  else snprintf(v2, sizeof(v2), "--");
+
+  const int c0 = MARGIN + 4, c1 = 118, c2 = 216;
+  tiny("TOKENS", c0, y + 5, COLOR_DIM, COLOR_BG);
+  tiny("COST", c1, y + 5, COLOR_DIM, COLOR_BG);
+  tiny("NEXT", c2, y + 5, COLOR_DIM, COLOR_BG);
+  t.setTextFont(2);
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
+  t.setCursor(c0, y + 14);
+  t.print(v0);
+  t.setCursor(c1, y + 14);
+  t.print(v1);
+  t.setTextColor(q.fresh ? COLOR_ICE : COLOR_DIM, COLOR_BG);
+  t.setCursor(c2, y + 14);
+  t.print(v2);
+  t.drawFastVLine(110, y + 4, 22, COLOR_EDGE);
+  t.drawFastVLine(208, y + 4, 22, COLOR_EDGE);
+}
+
+// Hero quota curve: cosine-interpolated area through the window levels.
+// Panel geometry (320x240): x 8..312, y 36..172.
+#define HERO_X0 8
+#define HERO_X1 312
+#define HERO_Y0 36
+#define HERO_Y1 172
+#define HERO_STEP 2
+#define HERO_SAMPLES ((HERO_X1 - HERO_X0) / HERO_STEP + 1)
+
+static int s_curveY[HERO_SAMPLES];
+
+static uint16_t lerp565(uint16_t a, uint16_t b, uint8_t t /*0..255*/) {
+  int ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
+  int br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
+  int r = ar + ((br - ar) * t >> 8);
+  int g = ag + ((bg - ag) * t >> 8);
+  int bl = ab + ((bb - ab) * t >> 8);
+  return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+// Sample the smooth level curve. Levels: remaining% per provider, n>=1.
+static void sampleCurve(const float *levels, uint8_t n) {
+  float xs[POOLS_MAX], ys[POOLS_MAX];
+  for (uint8_t i = 0; i < n; i++) {
+    xs[i] = HERO_X0 + (i + 0.5f) * (HERO_X1 - HERO_X0) / n;
+    float c = constrain(levels[i], 0, 100) / 100.0f;
+    ys[i] = (HERO_Y1 - 6) - c * (HERO_Y1 - HERO_Y0 - 30);
+  }
+  for (int s = 0; s < HERO_SAMPLES; s++) {
+    float x = HERO_X0 + s * HERO_STEP;
+    float y;
+    if (n < 2) {
+      y = ys[0];
+    } else if (x <= xs[0]) {
+      y = ys[0];
+    } else if (x >= xs[n - 1]) {
+      y = ys[n - 1];
+    } else {
+      uint8_t k = 0;
+      while (k < n - 2 && x > xs[k + 1]) k++;
+      float mu = (x - xs[k]) / (xs[k + 1] - xs[k]);
+      float m = (1.0f - cosf(mu * (float)M_PI)) * 0.5f;  // cosine ease
+      y = ys[k] + (ys[k + 1] - ys[k]) * m;
+    }
+    s_curveY[s] = (int)y;
+  }
+}
+
+// Centered small % readout for the scope ring.
+static void charPct(int cx, int cy, float pct) {
+  TFT_eSPI &t = display();
+  char b[8];
+  snprintf(b, sizeof(b), "%.0f", pct);
+  t.setTextFont(2);
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
+  t.setTextDatum(MC_DATUM);
+  t.drawString(b, cx, cy - 1);
+  t.setTextDatum(TL_DATUM);
+}
+
+// Shorten "Go 5h" -> "5h" for the cramped hero labels.
+static const char *shortName(const char *n) {
+  if ((n[0] == 'G' || n[0] == 'g') && (n[1] == 'O' || n[1] == 'o') && n[2] == ' ')
+    return n + 3;
+  return n;
+}
+
+static void drawHeroPanel(const QuotaState &q) {
+  TFT_eSPI &t = display();
+  const int pw = HERO_X1 - HERO_X0, ph = HERO_Y1 - HERO_Y0;
+
+  // Panel + grid.
+  t.drawRoundRect(HERO_X0, HERO_Y0, pw, ph, 4, COLOR_EDGE);
+  t.fillRoundRect(HERO_X0 + 1, HERO_Y0 + 1, pw - 2, ph - 2, 3, COLOR_BG);
+  for (int gx = HERO_X0 + 38; gx < HERO_X1 - 4; gx += 38)
+    t.drawFastVLine(gx, HERO_Y0 + 2, ph - 4, COLOR_GRID);
+  for (int gy = HERO_Y0 + 27; gy < HERO_Y1 - 4; gy += 27)
+    t.drawFastHLine(HERO_X0 + 2, gy, pw - 4, COLOR_GRID);
+
+  uint8_t n = q.oc_count;
+  if (n == 0 || n > POOLS_MAX) return;
+  float levels[POOLS_MAX];
+  for (uint8_t i = 0; i < n; i++) levels[i] = q.oc[i].remaining_pct;
+  sampleCurve(levels, n);
+
+  // Gradient area fill: 6 stacked bands per column.
+  for (int s = 0; s < HERO_SAMPLES; s++) {
+    int x = HERO_X0 + s * HERO_STEP;
+    int top = constrain(s_curveY[s], HERO_Y0 + 2, HERO_Y1 - 1);
+    int h = HERO_Y1 - 1 - top;
+    if (h <= 0) continue;
+    for (uint8_t b = 0; b < 6; b++) {
+      int bh = h / 6 + (b < (uint8_t)(h % 6) ? 1 : 0);
+      if (bh <= 0) continue;
+      int by = top + (h * b) / 6;
+      t.fillRect(x, by, HERO_STEP, bh, lerp565(COLOR_WAVE_TOP, COLOR_BG, (uint8_t)(b * 255 / 5)));
+    }
+  }
+  // Ice outline.
+  for (int s = 0; s < HERO_SAMPLES - 1; s++) {
+    int x0 = HERO_X0 + s * HERO_STEP;
+    t.drawLine(x0, s_curveY[s], x0 + HERO_STEP, s_curveY[s + 1], COLOR_ICE);
+  }
+
+  // Markers + band labels.
+  t.setTextFont(2);
+  for (uint8_t i = 0; i < n; i++) {
+    int mx = (int)(HERO_X0 + (i + 0.5f) * pw / n);
+    int my = (int)((HERO_Y1 - 6) - constrain(levels[i], 0, 100) / 100.0f * (ph - 30));
+    t.fillCircle(mx, my, 3, COLOR_BG);
+    t.drawCircle(mx, my, 3, COLOR_ICE);
+    char lbl[28];
+    snprintf(lbl, sizeof(lbl), "%s %.1f%%", shortName(q.oc[i].name), levels[i]);
+    int lw = t.textWidth(lbl);
+    int lx = constrain(mx - lw / 2, HERO_X0 + 3, HERO_X1 - 3 - lw);
+    // Labels sit on the fill below their marker (white on blue reads well);
+    // flip above only when the bottom would clip.
+    int ly = my + 7;
+    if (ly + 16 > HERO_Y1 - 3) ly = my - 22;
+    t.setTextColor(COLOR_TEXT, COLOR_BG);
+    t.setCursor(lx, ly);
+    t.print(lbl);
+  }
+
+  // WINDOWS inset: mini level bars, bottom-left inside the panel.
+  const int wx = HERO_X0 + 6, wy = HERO_Y1 - 36, ww = 52, wh = 30;
+  t.fillRect(wx, wy, ww, wh, COLOR_BG);
+  t.drawRect(wx, wy, ww, wh, COLOR_EDGE);
+  tiny("WIN", wx + 4, wy + 3, COLOR_DIM, COLOR_BG);
+  for (uint8_t i = 0; i < n && i < 4; i++) {
+    int bh = (int)(constrain(levels[i], 0, 100) / 100.0f * 18.0f);
+    int bx = wx + 5 + i * 12;
+    if (bh > 0) t.fillRectVGradient(bx, wy + wh - 3 - bh, 9, bh, statusColor(q.oc[i].status), darken(statusColor(q.oc[i].status)));
+  }
+
+  // SCOPE inset: min-level ring gauge, bottom-right inside the panel
+  // (the curve runs high, so the bottom corner stays clear).
+  const int sx = HERO_X1 - 66, sy = HERO_Y1 - 56, sw = 60, sh = 50;
+  t.fillRect(sx, sy, sw, sh, COLOR_BG);
+  t.drawRect(sx, sy, sw, sh, COLOR_EDGE);
+  tiny("SCOPE", sx + 4, sy + 3, COLOR_DIM, COLOR_BG);
+  const int rcx = sx + sw - 20, rcy = sy + 30, rr = 14;
+  float m = minRemaining(q);
+  t.drawArc(rcx, rcy, rr, rr - 4, 0, 360, COLOR_EDGE, COLOR_EDGE, false);
+  int end = (int)(constrain(m, 0, 100) / 100.0f * 360.0f);
+  if (end > 0) {
+    uint8_t st = ST_OK;
+    for (uint8_t i = 0; i < n; i++) st = max(st, q.oc[i].status);
+    t.drawArc(rcx, rcy, rr, rr - 4, 0, (uint32_t)end, statusColor(st), statusColor(st), true);
+  }
+  charPct(rcx, rcy, m);
+}
+
+void drawOverview(const QuotaState &q, bool netUp, bool serialMode) {
+  display().fillScreen(COLOR_BG);
+  header(q, netUp, serialMode);
+
+  if (!q.oc_connected || q.oc_count == 0) {
+    spaced("WAITING FOR BRIDGE", 60, 100, COLOR_DIM, COLOR_BG);
+    tiny("CHECK WIFI + PORT 3847", 88, 124, COLOR_DIM, COLOR_BG);
+    readoutStrip(q);
+    return;
+  }
+  drawHeroPanel(q);
+  readoutStrip(q);
+}
+
+void drawProviders(const QuotaState &q, bool netUp, bool serialMode) {
+  TFT_eSPI &t = display();
+  t.fillScreen(COLOR_BG);
+  header(q, netUp, serialMode);
+
+  if (!q.oc_connected || q.oc_count == 0) {
+    spaced("NO PROVIDERS", 96, 110, COLOR_DIM, COLOR_BG);
+    return;
+  }
+  int y = HEADER_H + 10;
+  for (uint8_t i = 0; i < q.oc_count && i < POOLS_MAX; i++) {
+    const PoolState &p = q.oc[i];
+    char lbl[32];
+    snprintf(lbl, sizeof(lbl), "P%d · %s", i + 1, p.name);
+    spaced(lbl, 12, y, q.oc_stale ? COLOR_AMBER : COLOR_DIM, COLOR_BG);
+    rightPair(y + 2, p, LAYOUT_W - 12);
+    meterBar(12, y + 46, LAYOUT_W - 24, 8, p.remaining_pct, p.status);
+    y += 62;
+  }
+}
+
+void drawScope(const QuotaState &q, bool netUp, bool serialMode) {
+  TFT_eSPI &t = display();
+  t.fillScreen(COLOR_BG);
+  header(q, netUp, serialMode);
+
+  const int cx = 78, cy = 128, r = 50, th = 11;
+  // Crosshair (vectorscope homage).
+  t.drawFastHLine(cx - r - 8, cy, 2 * (r + 8), COLOR_EDGE);
+  t.drawFastVLine(cx, cy - r - 8, 2 * (r + 8), COLOR_EDGE);
+  // Tick dots around the ring (symmetric, no zero-point assumption).
+  for (int a = 0; a < 360; a += 30) {
+    float rad = a * (float)M_PI / 180.0f;
+    int dx = (int)((r + 5) * sinf(rad));
+    int dy = (int)(-(r + 5) * cosf(rad));
+    t.fillCircle(cx + dx, cy + dy, 1, COLOR_DIM);
+  }
+
+  float m = minRemaining(q);
+  uint8_t st = ST_OFFLINE;
+  if (q.fresh && q.oc_connected) {
+    st = ST_OK;
+    for (uint8_t i = 0; i < q.oc_count; i++) st = max(st, q.oc[i].status);
+  }
+  // Background ring + progress arc.
+  t.drawArc(cx, cy, r, r - th, 0, 360, COLOR_EDGE, COLOR_EDGE, false);
+  if (q.fresh && q.oc_connected) {
+    uint16_t col = statusColor(st);
+    int end = (int)(constrain(m, 0, 100) / 100.0f * 360.0f);
+    if (end > 0) t.drawArc(cx, cy, r, r - th, 0, (uint32_t)end, col, col, true);
+  }
+  // Provider dots on the ring.
+  for (uint8_t i = 0; i < q.oc_count && i < 4; i++) {
+    float rad = (i * 120.0f + 90.0f) * (float)M_PI / 180.0f;
+    int dx = (int)(r * sinf(rad));
+    int dy = (int)(-r * cosf(rad));
+    t.fillCircle(cx + dx, cy + dy, 4, statusColor(q.oc[i].status));
+    t.drawCircle(cx + dx, cy + dy, 4, COLOR_BG);
+  }
+
+  // Center readout, big: font4 fills the ring.
+  char big[10];
+  snprintf(big, sizeof(big), "%.0f", m);
+  t.setTextFont(4);
+  t.setTextColor(q.fresh ? COLOR_TEXT : COLOR_DIM, COLOR_BG);
+  t.setTextDatum(MC_DATUM);
+  t.drawString(big, cx, cy - 4);
+  t.setTextDatum(TL_DATUM);
+  tiny("MIN LEFT %", cx - 26, cy + 24, COLOR_DIM, COLOR_BG);
+
+  // Right column: provider readouts.
+  int y = 56;
+  for (uint8_t i = 0; i < q.oc_count && i < 3; i++) {
+    const PoolState &p = q.oc[i];
+    char lbl[32];
+    snprintf(lbl, sizeof(lbl), "P%d · %s", i + 1, p.name);
+    spaced(lbl, 150, y, COLOR_DIM, COLOR_BG);
+    rightPair(y + 14, p, LAYOUT_W - 12);
+    y += 56;
+  }
+  tiny("TAP L/R · SCREENS", 150, LAYOUT_H - 18, COLOR_DIM, COLOR_BG);
+}
+
+void drawClock(const QuotaState &q, bool netUp, bool serialMode) {
+  TFT_eSPI &t = display();
+  t.fillScreen(COLOR_BG);
+  header(q, netUp, serialMode);
+
+  spaced("DESK CLOCK", 120, 44, COLOR_DIM, COLOR_BG);
+  char hm[8] = "--:--";
+  char date[24] = "";
+  struct tm tm;
+  if (getLocalTime(&tm, 0)) {
+    snprintf(hm, sizeof(hm), "%02d:%02d", tm.tm_hour, tm.tm_min);
+    snprintf(date, sizeof(date), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+  }
+  t.setTextFont(6);
+  t.setTextSize(2);
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
+  t.setTextDatum(MC_DATUM);
+  t.drawString(hm, LAYOUT_W / 2, 108);
+  t.setTextSize(1);
+  t.setTextFont(2);
+  t.setTextColor(COLOR_DIM, COLOR_BG);
+  t.drawString(date, LAYOUT_W / 2, 166);
+  t.setTextDatum(TL_DATUM);
+
+  // Level bars homage: provider remaining as vertical gradient bars.
+  int bx = 60;
+  for (uint8_t i = 0; i < q.oc_count && i < 4; i++) {
+    int h = (int)(constrain(q.oc[i].remaining_pct, 0, 100) / 100.0f * 34.0f);
+    uint16_t col = statusColor(q.oc[i].status);
+    t.drawRect(bx, 186, 14, 36, COLOR_EDGE);
+    if (h > 0) t.fillRectVGradient(bx + 1, 186 + 35 - h, 12, h, col, darken(col));
+    bx += 24;
+  }
+  const char *msg = q.oc_connected ? "SYNCED" : "WAITING FOR BRIDGE";
+  spaced(msg, 200, 196, q.fresh ? COLOR_ICE : COLOR_DIM, COLOR_BG);
+}
