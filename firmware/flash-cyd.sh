@@ -132,12 +132,56 @@ build_flags =
   -D LOAD_FONT7=1
   -D LOAD_FONT8=1
   -D CYD_ILI9341_DRIVER=1
+
+; NM-TV-154 port (1.54" 240x240 square, ESP32-D0, top button, no XPT2046).
+; Screen scope: 01 QUOTA + 02 WINDOWS only. Bridge unchanged (same /api/quota).
+; HW PROBE REQUIRED before flashing on glass:
+;   - confirm panel driver (ST7789 assumed; GC9107 possible) + inversion/BGR
+;   - confirm TFT SPI pins below (placeholders = CYD map, almost certainly
+;     WRONG on TV-154) + BL pin, single-button GPIO, LED/LDR presence.
+[env:tv154-st7789]
+platform = espressif32@6.8.1
+board = esp32dev
+framework = arduino
+board_build.partitions = huge_app.csv
+monitor_speed = 115200
+build_flags =
+  -D USER_SETUP_LOADED=1
+  -D ST7789_DRIVER=1
+  -D TV154=1
+  -D TFT_WIDTH=240
+  -D TFT_HEIGHT=240
+  -D TFT_MOSI=13
+  -D TFT_MISO=12
+  -D TFT_SCLK=14
+  -D TFT_CS=15
+  -D TFT_DC=2
+  -D TFT_RST=-1
+  -D TFT_BL=21
+  -D TFT_BACKLIGHT_ON=1
+  -D TFT_INVERSION_ON=1
+  -D SPI_FREQUENCY=27000000
+  -D TOUCH_CS=-1
+  -D LOAD_GLCD=1
+  -D LOAD_FONT2=1
+  -D LOAD_FONT4=1
+  -D LOAD_FONT6=1
+  -D LOAD_FONT7=1
+  -D LOAD_FONT8=1
+  -D TV154_ST7789=1
+lib_deps =
+  bodmer/TFT_eSPI@^2.5.43
+  bblanchon/ArduinoJson@^7.0.4
+  tzapu/WiFiManager@^2.0.17
 EOF_INI
 
 cat > include/config.h <<'EOF_CFG'
 #pragma once
 
 // Pin map for ESP32-2432S028R (NM-CYD), landscape 320x240.
+// TV154 NOTE: TFT/BTN/LED/LDR pins below are CYD placeholders. The TV-154
+// 240x240 panel + single top button use different GPIOs (TBD via HW probe).
+// Do not flash on glass until PIN_TFT_* / PIN_BUTTON_BOOT are verified.
 #define PIN_TFT_MOSI 13
 #define PIN_TFT_MISO 12
 #define PIN_TFT_SCLK 14
@@ -184,7 +228,14 @@ cat > include/config.h <<'EOF_CFG'
 #define SCR_SCOPE     2
 #define SCR_CLOCK     3
 #define SCR_ASK       4
+#ifdef TV154
+// TV-154 port scope: 01 QUOTA + 02 WINDOWS only (240x240, single button).
+#define SCR_COUNT     2
+#define HAS_XPT2046   0
+#else
 #define SCR_COUNT     5
+#define HAS_XPT2046   1
+#endif
 
 // Network / bridge defaults
 #define WIFI_AP_NAME "NM-Quota-Setup"
@@ -260,14 +311,37 @@ cat > include/ui_theme.h <<'EOF_THEME'
 
 // Display rotation: 3 = landscape 180° (USB port on the LEFT).
 // 1 = landscape (USB on the right). Touch mapping flips to match.
+// TV154: square 240x240, rotation 1 tentative (pick by cable ergonomics).
+#ifdef TV154
+#define DISPLAY_ROTATION 1
+#else
 #define DISPLAY_ROTATION 3
+#endif
 
-// Layout (landscape 320x240).
+// Layout (landscape 320x240; TV154: square 240x240).
+#ifdef TV154
+#define LAYOUT_W        240
+#define LAYOUT_H        240
+#else
 #define LAYOUT_W        320
 #define LAYOUT_H        240
+#endif
 #define HEADER_H        28
 #define MARGIN          8
 #define CARD_R          6
+
+// TV154 240px geometry (from mock_tv154_render.py audit):
+// - hero panel x 8..231 (was 8..311), value anchor 180->132,
+// - readoutStrip cols [12,118,216]->[12,92,168], dividers 110/208->84/164.
+#ifdef TV154
+#define TV154_HERO_X1   231
+#define TV154_CENTER_X  132
+#define TV154_C0        12
+#define TV154_C1        92
+#define TV154_C2        168
+#define TV154_DIV0      84
+#define TV154_DIV1      164
+#endif
 
 // Status -> color helper (implemented in screens.cpp).
 uint16_t statusColor(uint8_t status);
@@ -942,13 +1016,17 @@ EOF_NET
 cat > src/ui/display.cpp <<'EOF_DISP'
 #include "display.h"
 #include <SPI.h>
-#include <XPT2046_Touchscreen.h>
 #include "config.h"
 #include "ui_theme.h"
+#if HAS_XPT2046
+#include <XPT2046_Touchscreen.h>
+#endif
 
 static TFT_eSPI g_tft;
+#if HAS_XPT2046
 static SPIClass g_touchSPI(VSPI);
 static XPT2046_Touchscreen g_touch(PIN_TOUCH_CS, PIN_TOUCH_IRQ);
+#endif
 
 void displayInit() {
   g_tft.init();
@@ -959,13 +1037,25 @@ void displayInit() {
 TFT_eSPI &display() { return g_tft; }
 
 void touchInit() {
+#if !HAS_XPT2046
+  // TV-154: single top button, no XY touch. Kept as no-op so main.cpp
+  // compiles unchanged; navigation falls back to the BOOT/button path.
+  return;
+#else
   // Raw touch frame stays fixed (rotation 1); the 180° flip is applied
   // in touchTap so it stays exact regardless of calibration asymmetry.
   g_touchSPI.begin(PIN_TOUCH_CLK, PIN_TOUCH_MISO, PIN_TOUCH_MOSI, PIN_TOUCH_CS);
   g_touch.begin(g_touchSPI);
   g_touch.setRotation(1);
+#endif
 }
 
+#if !HAS_XPT2046
+bool touchTap(uint16_t &x, uint16_t &y) {
+  (void)x; (void)y;
+  return false;
+}
+#else
 static bool s_down = false;
 static unsigned long s_downMs = 0;
 static TS_Point s_downPt;
@@ -1002,6 +1092,7 @@ bool touchTap(uint16_t &x, uint16_t &y) {
   }
   return false;
 }
+#endif
 EOF_DISP
 
 cat > src/ui/screens.cpp <<'EOF_SCR'
@@ -1027,7 +1118,13 @@ static const char *screenSection(uint8_t scr) {
   // AUDIT H3: ASCII '-' only. TFT_eSPI bitmap fonts (font1/font2) are 7-bit;
   // UTF-8 middle-dot renders as two garbage glyphs on-device.
   switch (scr) {
+#ifdef TV154
+    // 240px: "02 - PROVIDERS" (130px spaced) collides with the clock cluster;
+    // "02 - WINDOWS" (114px) keeps an 8px gap (see mock_tv154_render.py audit).
+    case SCR_PROVIDERS: return "02 - WINDOWS";
+#else
     case SCR_PROVIDERS: return "02 - PROVIDERS";
+#endif
     case SCR_SCOPE: return "03 - SCOPE";
     case SCR_CLOCK: return "04 - STANDBY";
     case SCR_ASK: return "05 - ASK";
@@ -1138,7 +1235,9 @@ static void rightPair(int y, const PoolState &p, int right) {
 }
 
 // Centered value: big % near-center, countdown right-aligned + readable.
-// % anchors at x=180 (not 160) so long "GO MONTH" labels never overlap.
+// CYD: % anchors at x=180 (not 160) so long "GO MONTH" labels never overlap.
+// TV154 240px: free zone is label-end (~92) .. countdown-start (~174),
+// so anchor at 132 (see mock_tv154_render.py audit).
 static void centerPair(int y, const PoolState &p, int right) {
   TFT_eSPI &t = display();
   char cd[12];
@@ -1148,7 +1247,11 @@ static void centerPair(int y, const PoolState &p, int right) {
   t.setTextFont(4);
   t.setTextColor(statusColor(p.status), COLOR_BG);
   int pw = t.textWidth(pct);
+#ifdef TV154
+  t.setCursor(TV154_CENTER_X - pw / 2, y);
+#else
   t.setCursor(180 - pw / 2, y);
+#endif
   t.print(pct);
   t.setTextFont(2);
   t.setTextColor(COLOR_TEXT, COLOR_BG);
@@ -1169,7 +1272,11 @@ static void readoutStrip(const QuotaState &q) {
   if (q.oc_count) fmtCountdown(minReset(q), v2, sizeof(v2));
   else snprintf(v2, sizeof(v2), "--");
 
+#ifdef TV154
+  const int c0 = TV154_C0, c1 = TV154_C1, c2 = TV154_C2;
+#else
   const int c0 = MARGIN + 4, c1 = 118, c2 = 216;
+#endif
   tiny("TOKENS", c0, y + 5, COLOR_DIM, COLOR_BG);
   tiny("COST", c1, y + 5, COLOR_DIM, COLOR_BG);
   tiny("NEXT", c2, y + 5, COLOR_DIM, COLOR_BG);
@@ -1182,14 +1289,24 @@ static void readoutStrip(const QuotaState &q) {
   t.setTextColor(q.fresh ? COLOR_ICE : COLOR_DIM, COLOR_BG);
   t.setCursor(c2, y + 14);
   t.print(v2);
+#ifdef TV154
+  t.drawFastVLine(TV154_DIV0, y + 4, 22, COLOR_EDGE);
+  t.drawFastVLine(TV154_DIV1, y + 4, 22, COLOR_EDGE);
+#else
   t.drawFastVLine(110, y + 4, 22, COLOR_EDGE);
   t.drawFastVLine(208, y + 4, 22, COLOR_EDGE);
+#endif
 }
 
 // Hero quota curve: cosine-interpolated area through the window levels.
-// Panel geometry (320x240): x 8..312, y 36..172.
+// Panel geometry 320x240: x 8..312, y 36..172. TV154 240x240: x 8..231.
+#ifdef TV154
+#define HERO_X0 8
+#define HERO_X1 TV154_HERO_X1
+#else
 #define HERO_X0 8
 #define HERO_X1 312
+#endif
 #define HERO_Y0 36
 #define HERO_Y1 172
 #define HERO_STEP 2
@@ -1292,6 +1409,38 @@ static void drawHeroPanel(const QuotaState &q) {
 
   // Markers + band labels.
   t.setTextFont(2);
+#ifdef TV154
+  // 240px: marker slots are 74px but labels are 60-86px, so neighbours
+  // collide. Try below-marker first (v1 law), flip above on bottom-clip
+  // OR intersection with an already placed label (see mock_tv154_render.py).
+  int plx[POOLS_MAX], plx1[POOLS_MAX], ply[POOLS_MAX], ply1[POOLS_MAX];
+  for (uint8_t i = 0; i < n; i++) {
+    int mx = (int)(HERO_X0 + (i + 0.5f) * pw / n);
+    int my = (int)((HERO_Y1 - 6) - constrain(levels[i], 0, 100) / 100.0f * (ph - 30));
+    t.fillCircle(mx, my, 3, COLOR_BG);
+    t.drawCircle(mx, my, 3, COLOR_ICE);
+    char lbl[28];
+    snprintf(lbl, sizeof(lbl), "%s %.1f%%", shortName(q.oc[i].name), levels[i]);
+    int lw = t.textWidth(lbl);
+    int lx = constrain(mx - lw / 2, HERO_X0 + 3, HERO_X1 - 3 - lw);
+    int below = my + 7, above = my - 22;
+    int ly = below;
+    if (ly + 16 > HERO_Y1 - 3) ly = above;
+    // Flip to whichever side avoids already-placed boxes.
+    bool hit = false;
+    for (uint8_t j = 0; j < i; j++) {
+      if (lx < plx1[j] && lx + lw > plx[j] && ly < ply1[j] && ly + 16 > ply[j]) { hit = true; break; }
+    }
+    if (hit) {
+      int alt = (ly == below) ? above : below;
+      if (alt >= HERO_Y0 + 2 && alt + 16 <= HERO_Y1 - 2) ly = alt;
+    }
+    plx[i] = lx; plx1[i] = lx + lw; ply[i] = ly; ply1[i] = ly + 16;
+    t.setTextColor(COLOR_TEXT, COLOR_BG);
+    t.setCursor(lx, ly);
+    t.print(lbl);
+  }
+#else
   for (uint8_t i = 0; i < n; i++) {
     int mx = (int)(HERO_X0 + (i + 0.5f) * pw / n);
     int my = (int)((HERO_Y1 - 6) - constrain(levels[i], 0, 100) / 100.0f * (ph - 30));
@@ -1309,6 +1458,7 @@ static void drawHeroPanel(const QuotaState &q) {
     t.setCursor(lx, ly);
     t.print(lbl);
   }
+#endif
 }
 
 // Session rotator strip: conversation title + model between hero graph and
@@ -1349,8 +1499,13 @@ void drawOverview(const QuotaState &q, bool netUp, bool serialMode) {
   header(q, netUp, serialMode);
 
   if (!q.oc_connected || q.oc_count == 0) {
+#ifdef TV154
+    spaced("WAITING FOR BRIDGE", 20, 100, COLOR_DIM, COLOR_BG);
+    tiny("CHECK WIFI + PORT 3847", 48, 124, COLOR_DIM, COLOR_BG);
+#else
     spaced("WAITING FOR BRIDGE", 60, 100, COLOR_DIM, COLOR_BG);
     tiny("CHECK WIFI + PORT 3847", 88, 124, COLOR_DIM, COLOR_BG);
+#endif
     readoutStrip(q);
     return;
   }
@@ -1365,7 +1520,11 @@ void drawProviders(const QuotaState &q, bool netUp, bool serialMode) {
   header(q, netUp, serialMode);
 
   if (!q.oc_connected || q.oc_count == 0) {
+#ifdef TV154
+    spaced("NO PROVIDERS", 56, 110, COLOR_DIM, COLOR_BG);
+#else
     spaced("NO PROVIDERS", 96, 110, COLOR_DIM, COLOR_BG);
+#endif
     return;
   }
   int y = HEADER_H + 10;
@@ -1665,6 +1824,10 @@ static size_t s_lineLen = 0;
 
 static void render() {
   bool netUp = netIsConnected();
+#ifdef TV154
+  // 01+02 only; any stray ASK/other id falls back to overview.
+  if (g_screen >= SCR_COUNT) g_screen = SCR_OVERVIEW;
+#endif
   switch (g_screen) {
     case SCR_PROVIDERS: drawProviders(g_state, netUp, g_serialMode); break;
     case SCR_SCOPE: drawScope(g_state, netUp, g_serialMode); break;
@@ -1686,7 +1849,12 @@ static void syncBadge(const char *msg) {
 }
 
 static void skipAskIfEmpty(uint8_t &scr) {
+#ifdef TV154
+  // TV-154 scope is 01+02 only: ASK never shown, clamp any stray SCR_ASK.
+  if (scr >= SCR_COUNT) scr = SCR_OVERVIEW;
+#else
   if (scr == SCR_ASK && !g_ask.pending) scr = SCR_OVERVIEW;
+#endif
 }
 
 static void nextScreen() {
@@ -1751,10 +1919,15 @@ static void handleSerialLine() {
       wasId[sizeof(wasId) - 1] = '\0';
       g_ask = next;
       g_serialMode = true;
+#ifdef TV154
+      // TV-154 01+02 port: no ASK screen, never auto-popup.
+      skipAskIfEmpty(g_screen);
+#else
       if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
         g_screen = SCR_ASK;
       }
       skipAskIfEmpty(g_screen);
+#endif
       render();
       return;
     }
@@ -1860,6 +2033,10 @@ static void pollAskNow() {
   strncpy(wasId, g_ask.id, sizeof(wasId) - 1);
   wasId[sizeof(wasId) - 1] = '\0';
   g_ask = next;
+#ifdef TV154
+  // TV-154 01+02 port: keep quota state fresh, never leave 01/02 for ASK.
+  skipAskIfEmpty(g_screen);
+#else
   if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
     g_screen = SCR_ASK;  // auto-popup on new question
     render();
@@ -1870,6 +2047,7 @@ static void pollAskNow() {
     render();
   }
   skipAskIfEmpty(g_screen);
+#endif
 }
 
 // ASK button hit-test. Boxes mirror drawAsk()/mock ASK_BTNS_*.
