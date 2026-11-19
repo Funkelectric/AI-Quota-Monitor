@@ -21,4 +21,10 @@ bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeout
 /** GET http://host:port/api/quota into out. False on any transport/parse error. */
 bool netFetchQuota(const NetConfig &cfg, struct QuotaState &out);
 
+/** GET http://host:port/api/ask. True+pending on 200, true+!pending on 204, false on error. */
+bool netFetchAsk(const NetConfig &cfg, struct AskState &out);
+
+/** POST http://host:port/api/ask/answer {id, option_id}. True on 200. */
+bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id);
+
 bool netIsConnected();

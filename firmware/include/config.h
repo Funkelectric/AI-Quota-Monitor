@@ -46,7 +46,8 @@
 #define SCR_PROVIDERS 1
 #define SCR_SCOPE     2
 #define SCR_CLOCK     3
-#define SCR_COUNT     4
+#define SCR_ASK       4
+#define SCR_COUNT     5
 
 // Network / bridge defaults
 #define WIFI_AP_NAME "NM-Quota-Setup"
@@ -75,3 +76,15 @@
 #define POOL_NAME_MAX 23
 #define MODEL_NAME_MAX 23
 #define POOLS_MAX 4
+#define SESSIONS_MAX 4
+#define SESSION_TITLE_MAX 23
+#define SESSION_MODEL_MAX 31
+
+// 05 ASK screen: question queue state (<1KB payload).
+#define ASK_JSON_MAX 1024
+#define ASK_QUESTION_MAX 120
+#define ASK_DETAIL_MAX 48
+#define ASK_OPTS_MAX 4
+#define ASK_OPT_LABEL_MAX 24
+#define ASK_ID_MAX 15
+#define ASK_POLL_SEC 5

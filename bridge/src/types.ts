@@ -16,12 +16,21 @@ export interface QuotaPool {
   status: HealthStatus;
 }
 
+export interface SessionInfo {
+  /** Conversation title, truncated ≤23 chars */
+  title: string;
+  /** Pretty model name, e.g. "Muse Spark 1.3 Contributor" (≤31 chars) */
+  model: string;
+}
+
 export interface OpenCodeBlock {
   connected: boolean;
   today_cost_usd: number;
   /** Tokens used today, in thousands */
   today_tokens_k: number;
   providers: QuotaPool[];
+  /** Recent active sessions (most-recent first, ≤4) for CYD rotator */
+  sessions?: SessionInfo[];
   /** True when values are last-known (CLI/API unreachable) */
   stale?: boolean;
 }

@@ -10,6 +10,11 @@ struct PoolState {
   uint8_t status;  // ST_OK / ST_WARN / ST_CRIT
 };
 
+struct SessionState {
+  char title[SESSION_TITLE_MAX + 1];
+  char model[SESSION_MODEL_MAX + 1];
+};
+
 struct QuotaState {
   bool oc_connected;
   float oc_cost;
@@ -17,6 +22,8 @@ struct QuotaState {
   PoolState oc[POOLS_MAX];
   uint8_t oc_count;
   bool oc_stale;
+  SessionState sessions[SESSIONS_MAX];
+  uint8_t session_count;
 
   uint8_t overall;  // ST_OK / ST_WARN / ST_CRIT / ST_OFFLINE
   unsigned long updated_ms;
