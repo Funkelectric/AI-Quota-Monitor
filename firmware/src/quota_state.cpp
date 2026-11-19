@@ -10,7 +10,14 @@ uint8_t statusForPct(float pct) {
 
 void fmtCountdown(long sec, char *out, size_t outLen) {
   if (sec < 0) sec = 0;
-  if (sec < 3600) {
+  // AUDIT M7: sub-minute shows seconds (45s), sub-2min shows m+sec? Keep
+  // compact: <60s -> "45s", <120s -> "1m 45s" is too long for 12ch buf,
+  // so <120s shows seconds only ("95s"). Hours/days unchanged.
+  if (sec < 60) {
+    snprintf(out, outLen, "%lds", sec);
+  } else if (sec < 120) {
+    snprintf(out, outLen, "%lds", sec);
+  } else if (sec < 3600) {
     snprintf(out, outLen, "%ldm", sec / 60);
   } else if (sec < 86400) {
     snprintf(out, outLen, "%ldh %ldm", sec / 3600, (sec % 3600) / 60);
@@ -49,7 +56,8 @@ static uint8_t parseStatus(const char *s, float pct) {
 }
 
 // Reused document: one allocation, cleared per parse (heap-stable for soak).
-static JsonDocument g_doc;
+// AUDIT M4: fixed-capacity static pools (no unbounded dynamic growth).
+static StaticJsonDocument<2048> g_doc;
 
 bool parseQuotaPayload(const char *json, size_t len, QuotaState &out) {
   if (!json || len == 0 || len > QUOTA_JSON_MAX) return false;

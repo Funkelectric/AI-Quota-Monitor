@@ -88,4 +88,69 @@ export function resetMockState(): void {
   cost = 1.42;
   tokensK = 485;
   lastTick = Date.now();
+  mockAskIdx = 0;
+  mockAskAt = 0;
+}
+
+// ---- Mock ASK queue (PLAN P1 / AUDIT P3-16): rotating 2/3/4-option samples
+// for UI testing in --mock mode. Rotates every 30s so the CYD auto-popup,
+// button layouts, and expiry paths can be exercised without a live agent.
+import type { AskPending } from "./askStore.js";
+
+const MOCK_ASKS: Array<Pick<AskPending, "question" | "detail" | "options" | "timeout_sec">> = [
+  {
+    question: "Which model for refactor?",
+    detail: "mock - 2 options",
+    options: [
+      { id: "quick", label: "Quick patch" },
+      { id: "full", label: "Full rewrite" },
+    ],
+    timeout_sec: 90,
+  },
+  {
+    question: "Deploy now or wait for tests?",
+    detail: "mock - 3 options, longer question wraps to two lines on-device",
+    options: [
+      { id: "now", label: "Deploy now" },
+      { id: "tests", label: "Wait tests" },
+      { id: "skip", label: "Skip" },
+    ],
+    timeout_sec: 90,
+  },
+  {
+    question: "Pick a review focus area?",
+    detail: "mock - 4 options grid",
+    options: [
+      { id: "perf", label: "Performance" },
+      { id: "sec", label: "Security" },
+      { id: "ux", label: "UX polish" },
+      { id: "docs", label: "Docs" },
+    ],
+    timeout_sec: 60,
+  },
+];
+
+let mockAskIdx = 0;
+let mockAskAt = 0;
+
+export function mockAskPayload(): AskPending | null {
+  const now = Date.now();
+  // Rotate every 30s; 10s gap with no question so NO QUESTION renders too.
+  const cycle = Math.floor(now / 30_000);
+  if (cycle % 4 === 3) return null;
+  if (mockAskAt === 0 || cycle !== mockAskIdx) {
+    mockAskIdx = cycle;
+    mockAskAt = now;
+  }
+  const sample = MOCK_ASKS[cycle % 3];
+  return {
+    id: `q_mock${cycle % 1000}`,
+    ts: Math.floor(mockAskAt / 1000),
+    session: "mock-session",
+    question: sample.question,
+    detail: sample.detail,
+    options: sample.options,
+    timeout_sec: sample.timeout_sec,
+    answered: false,
+  };
 }

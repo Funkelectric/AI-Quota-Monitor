@@ -16,8 +16,14 @@ void configLoad(NetConfig &cfg) {
 
   Preferences p;
   if (!p.begin(NVS_NS, true)) return;
-  String h = p.getString(NVS_KEY_HOST, cfg.host);
-  strncpy(cfg.host, h.c_str(), sizeof(cfg.host) - 1);
+  // AUDIT M3: no Arduino String on the read path (heap-stable); getString
+  // directly into a stack buffer, then copy with truncation guard.
+  char hbuf[sizeof(cfg.host)];
+  size_t n = p.getString(NVS_KEY_HOST, hbuf, sizeof(hbuf));
+  if (n > 0) {
+    strncpy(cfg.host, hbuf, sizeof(cfg.host) - 1);
+    cfg.host[sizeof(cfg.host) - 1] = '\0';
+  }
   cfg.port = p.getUShort(NVS_KEY_PORT, cfg.port);
   cfg.poll_sec = p.getUShort(NVS_KEY_POLL, cfg.poll_sec);
   if (cfg.poll_sec < 5) cfg.poll_sec = 5;
@@ -42,9 +48,11 @@ static bool g_save = false;
 static void saveParamsCallback() { g_save = true; }
 
 bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeoutMs) {
-  if (WiFi.status() == WL_CONNECTED && !forcePortal) return true;
-
+  // AUDIT C1: stay in STA + auto-reconnect so roams/DHCP expiry recover.
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  if (WiFi.status() == WL_CONNECTED && !forcePortal) return true;
   WiFiManager wm;
   wm.setTitle("NM Quota Monitor");
   wm.setConfigPortalTimeout(portalTimeoutMs / 1000);
@@ -99,9 +107,14 @@ bool netFetchQuota(const NetConfig &cfg, QuotaState &out) {
   int code = http.GET();
   bool ok = false;
   if (code == 200) {
+    // AUDIT M2: reject oversize bodies up-front; chunked (-1) still bounded
+    // by QUOTA_JSON_MAX + the 1.5s stall heuristic below.
     int len = http.getSize();
+    if (len > QUOTA_JSON_MAX) {
+      http.end();
+      return false;
+    }
     if (len < 0) len = QUOTA_JSON_MAX;
-    if (len > QUOTA_JSON_MAX) len = QUOTA_JSON_MAX;
     WiFiClient *stream = http.getStreamPtr();
     size_t n = 0;
     unsigned long deadline = millis() + HTTP_TIMEOUT_MS;
@@ -119,6 +132,28 @@ bool netFetchQuota(const NetConfig &cfg, QuotaState &out) {
   }
   http.end();
   return ok;
+}
+
+static unsigned long s_lastReconnectTry = 0;
+static bool s_ntpDone = false;
+
+void netTick() {
+  // Called every loop(). Non-blocking: at most one reconnect attempt per
+  // WIFI_RECONNECT_SEC, no portal, no delay().
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!s_ntpDone) {
+      // Regained link (or first connect without portal path): re-sync clock.
+      configTzTime(NTP_TZ, NTP_SERVER_1, NTP_SERVER_2);
+      s_ntpDone = true;
+    }
+    return;
+  }
+  unsigned long now = millis();
+  if (now - s_lastReconnectTry < WIFI_RECONNECT_MS) return;
+  s_lastReconnectTry = now;
+  s_ntpDone = false;
+  WiFi.disconnect(false, false);
+  WiFi.reconnect();
 }
 
 bool netIsConnected() { return WiFi.status() == WL_CONNECTED; }
@@ -144,8 +179,11 @@ bool netFetchAsk(const NetConfig &cfg, AskState &out) {
   bool ok = false;
   if (code == 200) {
     int len = http.getSize();
+    if (len > ASK_JSON_MAX) {
+      http.end();
+      return false;
+    }
     if (len < 0) len = ASK_JSON_MAX;
-    if (len > ASK_JSON_MAX) len = ASK_JSON_MAX;
     WiFiClient *stream = http.getStreamPtr();
     size_t n = 0;
     unsigned long deadline = millis() + HTTP_TIMEOUT_MS;
@@ -165,6 +203,14 @@ bool netFetchAsk(const NetConfig &cfg, AskState &out) {
   return ok;
 }
 
+static char s_token[64] = "";
+
+void netSetToken(const char *token) {
+  if (!token) token = "";
+  strncpy(s_token, token, sizeof(s_token) - 1);
+  s_token[sizeof(s_token) - 1] = '\0';
+}
+
 bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) {
   if (WiFi.status() != WL_CONNECTED || !id || !option_id) return false;
   char url[128];
@@ -174,8 +220,14 @@ bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) 
   http.setTimeout(HTTP_TIMEOUT_MS);
   if (!http.begin(url)) return false;
   http.addHeader("Content-Type", "application/json");
-  char body[96];
-  snprintf(body, sizeof(body), "{\"id\":\"%.15s\",\"option_id\":\"%.15s\"}", id, option_id);
+  if (s_token[0]) {
+    char auth[80];
+    snprintf(auth, sizeof(auth), "Bearer %.64s", s_token);
+    http.addHeader("Authorization", auth);
+  }
+  // ASK_ID_MAX=31 unified with bridge (AUDIT C3). Body sized for 31+31 + JSON.
+  char body[128];
+  snprintf(body, sizeof(body), "{\"id\":\"%.31s\",\"option_id\":\"%.31s\"}", id, option_id);
   int code = http.POST((uint8_t *)body, strlen(body));
   http.end();
   return code == 200;

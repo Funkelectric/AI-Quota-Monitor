@@ -27,4 +27,15 @@ bool netFetchAsk(const NetConfig &cfg, struct AskState &out);
 /** POST http://host:port/api/ask/answer {id, option_id}. True on 200. */
 bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id);
 
+/**
+ * Non-blocking WiFi maintenance (AUDIT C1 / P0-1).
+ * Call every loop(): when offline, attempts WiFi.reconnect() at most every
+ * WIFI_RECONNECT_SEC and re-runs NTP (configTzTime) once on regain.
+ * Never blocks; never opens the portal (portal only via BOOT long-press).
+ */
+void netTick();
+
 bool netIsConnected();
+
+/** Optional bearer for POST /api/ask/answer when bridge sets CYD_TOKEN (P3-17). */
+void netSetToken(const char *token);

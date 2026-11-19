@@ -81,10 +81,23 @@
 #define SESSION_MODEL_MAX 31
 
 // 05 ASK screen: question queue state (<1KB payload).
+// NOTE: ASK_ID_MAX=31 unified with bridge (bridge slices ids to 31, see
+// bridge/src/askStore.ts MAX_ID). Was 15 -> 16-char bridge ids truncated on
+// tap and answered 410 + wrong-option fallback (AUDIT C3).
 #define ASK_JSON_MAX 1024
 #define ASK_QUESTION_MAX 120
 #define ASK_DETAIL_MAX 48
 #define ASK_OPTS_MAX 4
 #define ASK_OPT_LABEL_MAX 24
-#define ASK_ID_MAX 15
+#define ASK_ID_MAX 31
 #define ASK_POLL_SEC 5
+
+// WiFi reconnect: non-blocking re-associate attempt every 30s when offline.
+// Fixes C1 (drop latched offline forever). NTP re-synced on regain.
+#define WIFI_RECONNECT_SEC 30
+#define WIFI_RECONNECT_MS (WIFI_RECONNECT_SEC * 1000UL)
+
+// Backlight: EMA + deadband + fast slew (fixes H5 slow 107s swing).
+#define BL_EMA_N 4
+#define BL_SLEW_STEP 8
+#define BL_DEADBAND 4

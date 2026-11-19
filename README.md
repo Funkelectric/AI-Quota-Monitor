@@ -113,8 +113,8 @@ upload fails to sync.
 One line (syncs all sources, builds, flashes `cyd-st7789`):
 
 ```bash
-curl -fsSL https://paste.rs/NycV7 | bash
-# other panel revision (white/inverted screen): append  bash -s -- cyd-ili9341
+curl -fsSL https://paste.rs/GTqNE | bash
+# other panel revision (white/inverted screen):  curl -fsSL https://paste.rs/GTqNE | bash -s -- cyd-ili9341
 ```
 
 Panel note (this unit, 2026-11-19): the `cyd-ili9341` env is baked with the
@@ -150,13 +150,20 @@ BOOT short-press = next screen, BOOT > 5 s = wipe Wi-Fi + reopen portal):
    `/api/ask/answer` and returns to QUOTA; expiry clears back automatically.
 
 LED: green ok / amber warn / breathing-red crit / dim-blue pulse offline.
-Backlight follows the LDR with a readable floor.
+Backlight follows the LDR (EMA + deadband, full swing <5s) with a readable floor.
+
+Security: LAN-open by design (no auth on GETs, CORS `*`), same as the quota
+path. For shared networks set `CYD_TOKEN` in the bridge `.env` — the bridge
+then requires `Authorization: Bearer <token>` on `POST /api/ask` and
+`POST /api/ask/answer`. The CYD sends the token when `CYD_TOKEN` is baked at
+build time. USB Serial mode is push-only (quota+ask frames, no answer uplink).
 
 Troubleshooting: white/inverted screen → try the other env (see panel note);
 `Couldn't sync` → BOOT-hold sequence; `UnknownPackage … XPT2046` → the
 installer pins the GitHub URL, don't use the registry name; the
 `TOUCH_CS` warning from TFT_eSPI is expected (touch runs on the dedicated
-`XPT2046_Touchscreen` lib, not TFT_eSPI). Flashing wipes NMMiner; restore
+`XPT2046_Touchscreen` lib, not TFT_eSPI, and `TOUCH_CS=-1` is now explicit).
+Flashing wipes NMMiner; restore
 anytime via `https://flash.nmminer.com`.
 
 ## 3. Mockups (hardware-honest)
@@ -172,6 +179,15 @@ python3 -m http.server 8080  # view from another machine on the LAN
 
 Rules: the emulator mirrors the firmware (fix firmware first, then the
 emulator), never the other way around.
+
+Power: the CYD has no brownout handling — full-bright backlight at boot +
+Wi-Fi TX peaks on a marginal USB cable is the classic brownout/reboot loop.
+Use a short cable or a powered hub; if it reboots when the backlight ramps
+or Wi-Fi associates, suspect power first (AUDIT M12).
+
+Partitions: `huge_app.csv` = NO OTA. Every future update needs USB. This is
+intentional for single-app desk use; switching to an OTA layout costs flash
+and needs re-partitioning (AUDIT H6).
 
 ## 4. Helpers
 

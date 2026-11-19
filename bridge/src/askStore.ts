@@ -41,12 +41,17 @@ function remember(entry: AskPending): void {
 }
 
 function rid(): string {
-  return `q_${Date.now().toString(36)}${Math.floor(Math.random() * 0xffff).toString(36)}`;
+  // Contract (AUDIT C3): `q` + ≤29 [0-9a-z], total ≤31 (firmware ASK_ID_MAX).
+  const id = `q_${Date.now().toString(36)}${Math.floor(Math.random() * 0xffff).toString(36)}`;
+  return id.slice(0, MAX_ID);
 }
 
 const MAX_Q = 120;
 const MAX_LABEL = 24;
 const MAX_OPTS = 4;
+// AUDIT C3 / P0-3: unified id width 31 with firmware ASK_ID_MAX.
+// Was 16 -> 16-char ids truncated to 15 on-device and answered 410.
+export const MAX_ID = 31;
 
 export function postAsk(input: {
   question?: string;
@@ -60,7 +65,7 @@ export function postAsk(input: {
   const options: AskOption[] = rawOpts.slice(0, MAX_OPTS).map((o, i) => {
     if (typeof o === "string") return { id: `opt${i + 1}`, label: o.slice(0, MAX_LABEL) || `Option ${i + 1}` };
     const label = String(o?.label ?? "").slice(0, MAX_LABEL) || `Option ${i + 1}`;
-    const id = String(o?.id ?? "").slice(0, 16) || `opt${i + 1}`;
+    const id = String(o?.id ?? "").slice(0, MAX_ID) || `opt${i + 1}`;
     return { id, label };
   });
   while (options.length === 0) options.push({ id: "opt1", label: "OK" });
@@ -104,7 +109,10 @@ export function getById(id: string): AskPending | null {
 export function answerAsk(id: string, option_id: string): AskPending | null {
   const p = getPending();
   if (!p || p.id !== id) return null;
-  const opt = p.options.find((o) => o.id === option_id) ?? p.options[0];
+  // AUDIT C3: unknown option_id must NOT fall back to options[0] (that
+  // records a WRONG answer for truncated/garbled ids). Reject -> 410/400.
+  const opt = p.options.find((o) => o.id === option_id);
+  if (!opt) return null;
   p.answered = true;
   p.answer = opt.id;
   const done = { ...p };

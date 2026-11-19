@@ -45,6 +45,19 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
   res.end(body);
 }
 
+/**
+ * Optional bearer gate for mutating routes (AUDIT P3-17, PLAN-CYD-ASK §3.2).
+ * LAN-open by default (documented); set CYD_TOKEN to require
+ * `Authorization: Bearer <token>` on POST /api/ask and POST /api/ask/answer.
+ * GETs stay open so the CYD poll loop never needs secrets in flash.
+ */
+function checkAuth(req: IncomingMessage): boolean {
+  const want = (process.env.CYD_TOKEN ?? "").trim();
+  if (!want) return true;
+  const got = (req.headers.authorization ?? "").trim();
+  return got === `Bearer ${want}`;
+}
+
 export function startHttpServer(opts: HttpOptions): Server {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -100,6 +113,10 @@ export function startHttpServer(opts: HttpOptions): Server {
     }
 
     if (req.method === "POST" && url.pathname === "/api/ask") {
+      if (!checkAuth(req)) {
+        send(res, 401, { error: "unauthorized" });
+        return;
+      }
       try {
         const input = (await readJson(req)) as {
           question?: string;
@@ -120,11 +137,22 @@ export function startHttpServer(opts: HttpOptions): Server {
     }
 
     if (req.method === "POST" && url.pathname === "/api/ask/answer") {
+      if (!checkAuth(req)) {
+        send(res, 401, { error: "unauthorized" });
+        return;
+      }
       try {
         const input = (await readJson(req)) as { id?: string; option_id?: string };
         const done = input?.id ? answerAsk(String(input.id), String(input.option_id ?? "")) : null;
         if (!done) {
-          send(res, 410, { error: "no_such_question" });
+          // Distinguish unknown question (410 gone) from known PENDING
+          // question + unknown option (400 bad_option). Never silently
+          // record options[0]. Note: getById() also matches resolved
+          // entries — replay of an answered question must stay 410, so only
+          // the live pending slot yields 400.
+          const pend = getPending();
+          if (pend && input?.id && pend.id === String(input.id)) send(res, 400, { error: "bad_option" });
+          else send(res, 410, { error: "no_such_question" });
           return;
         }
         send(res, 200, { ok: true, id: done.id, answer: done.answer });

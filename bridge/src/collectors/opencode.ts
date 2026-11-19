@@ -126,7 +126,7 @@ function toPool(name: string, w: GoWindow): QuotaPool {
 /** Query the Console Go subscription meters (5h / weekly / monthly). */
 export async function queryGoStatus(
   cred: ConsoleCredential,
-  timeoutMs = 10_000,
+  timeoutMs = 5_000,
 ): Promise<GoStatus> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -163,8 +163,9 @@ export async function getTodayUsage(
   dbPath: string = getOpencodeDbPath(),
 ): Promise<{ cost: number; tokens_k: number }> {
   try {
+    // AUDIT C2: 15s -> 5s so a hung CLI can't blow the 8s firmware budget.
     const { stdout } = await execFileAsync("opencode", ["stats", "--days", "0", "--json"], {
-      timeout: 15_000,
+      timeout: 5_000,
       maxBuffer: 4 * 1024 * 1024,
     });
     const stats = JSON.parse(stdout) as {
@@ -214,7 +215,7 @@ interface QuotaShowJson {
 }
 
 /** Fallback: parse `opencode-quota show --json` percent entries into pools. */
-export async function readQuotaShowFallback(timeoutMs = 20_000): Promise<QuotaPool[]> {
+export async function readQuotaShowFallback(timeoutMs = 8_000): Promise<QuotaPool[]> {
   const bin = process.env.OPENCODE_QUOTA_BIN?.trim() || "npx";
   const args =
     bin === "npx"
@@ -239,9 +240,11 @@ export async function readQuotaShowFallback(timeoutMs = 20_000): Promise<QuotaPo
         reset_in_sec,
         status: statusForPct(remaining),
       });
-      if (pools.length >= 6) break;
+      // AUDIT H2: firmware POOLS_MAX=4 (3 roomy rows, 4 condensed). Never send
+      // 6 — the CYD silently drops extras and the 4th row used to overflow.
+      if (pools.length >= 4) break;
     }
-    if (pools.length >= 6) break;
+    if (pools.length >= 4) break;
   }
   return pools;
 }
@@ -284,7 +287,9 @@ export function getRecentSessions(dbPath: string = getOpencodeDbPath(), limit = 
             model,
           };
         })
-        .filter((s) => s.title || s.model);
+        // AUDIT M10: "untitled" rows are stale placeholders, not active work.
+        // Drop them so the rotator never fills with 3/4 meaningless entries.
+        .filter((s) => s.title && s.title !== "untitled" && s.title !== "-- idle --");
     } finally {
       db.close();
     }
@@ -293,19 +298,25 @@ export function getRecentSessions(dbPath: string = getOpencodeDbPath(), limit = 
   }
 }
 
-export async function collectOpenCode(): Promise<OpenCodeBlock> {
-  const now = Date.now();
-  if (cache && now - cache.at < cacheTtlMs()) return cache.data;
+let inFlight: Promise<OpenCodeBlock> | null = null;
+let lastAttempt = 0;
+// AUDIT H7: when serving stale, don't re-run the ≤45s chain on every poll
+// (CYD every 15s + serial every 10s = retry storm). At most one background
+// attempt per STALE_RETRY_MS.
+const STALE_RETRY_MS = 15_000;
 
+async function doCollect(): Promise<OpenCodeBlock> {
   const dbPath = getOpencodeDbPath();
-  const usage = await getTodayUsage(dbPath);
+  // Usage (local exec/DB) and Console query run concurrently so the worst
+  // case is max(5s, 5s) + fallback(8s), not the sum (AUDIT C2).
+  const usageP = getTodayUsage(dbPath);
   const sessions = getRecentSessions(dbPath);
+  const cred = readConsoleCredential(dbPath);
 
   // Primary: live Console Go meters.
   try {
-    const cred = readConsoleCredential(dbPath);
     if (cred) {
-      const go = await queryGoStatus(cred);
+      const [usage, go] = await Promise.all([usageP, queryGoStatus(cred)]);
       const data: OpenCodeBlock = {
         connected: true,
         today_cost_usd: usage.cost,
@@ -324,6 +335,7 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
     console.warn(`[opencode] console query failed: ${String(err).slice(0, 160)}`);
   }
 
+  const usage = await usageP;
   // Fallback: opencode-quota export cache.
   try {
     const pools = await readQuotaShowFallback();
@@ -332,7 +344,7 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
         connected: true,
         today_cost_usd: usage.cost,
         today_tokens_k: usage.tokens_k,
-        providers: pools,
+        providers: pools.slice(0, 4),
         sessions,
         stale: true,
       };
@@ -352,6 +364,9 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
       sessions: sessions.length > 0 ? sessions : cache.data.sessions,
       stale: true,
     };
+    // AUDIT H7: refresh at on stale serve so TTL backoff applies; the
+    // background refresher (below) picks up the next attempt.
+    cache = { at: Date.now(), data: stale };
     return stale;
   }
   return {
@@ -364,7 +379,57 @@ export async function collectOpenCode(): Promise<OpenCodeBlock> {
   };
 }
 
+/** Synchronous read for the hot path: HTTP handler + serial pusher. */
+export function getCachedBlock(): OpenCodeBlock | null {
+  return cache?.data ?? null;
+}
+
+export function isCacheFresh(): boolean {
+  if (!cache) return false;
+  return Date.now() - cache.at < cacheTtlMs();
+}
+
+/** Trigger a background refresh (fire-and-forget, de-duplicated). */
+export function refreshInBackground(): void {
+  const now = Date.now();
+  if (inFlight || now - lastAttempt < STALE_RETRY_MS) return;
+  lastAttempt = now;
+  inFlight = doCollect()
+    .catch((err) => {
+      console.warn(`[opencode] background refresh failed: ${String(err).slice(0, 160)}`);
+      return cache?.data ?? null;
+    })
+    .then((d) => d as OpenCodeBlock)
+    .finally(() => {
+      inFlight = null;
+    }) as Promise<OpenCodeBlock>;
+  void inFlight;
+}
+
+export async function collectOpenCode(): Promise<OpenCodeBlock> {
+  const now = Date.now();
+  // Fast path: fresh cache serves in ~0ms, well under the 8s firmware budget.
+  if (cache && now - cache.at < cacheTtlMs()) return cache.data;
+  // Stale-while-revalidate (AUDIT C2/H7): serve last-good immediately and
+  // refresh in background instead of blocking the HTTP handler ≤45s.
+  if (cache) {
+    refreshInBackground();
+    return cache.data;
+  }
+  // Cold start (no cache yet): must fetch inline, but with the tightened
+  // timeouts above (5s/5s/8s, usage+go concurrent).
+  if (!inFlight) {
+    lastAttempt = now;
+    inFlight = doCollect().finally(() => {
+      inFlight = null;
+    });
+  }
+  return inFlight;
+}
+
 /** Test hook: drop the in-memory cache. */
 export function resetOpenCodeCache(): void {
   cache = null;
+  inFlight = null;
+  lastAttempt = 0;
 }

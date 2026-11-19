@@ -1,15 +1,53 @@
 #!/usr/bin/env bash
-# NM-CYD Quota Monitor: sync firmware sources, build, flash.
-# Usage: flash-cyd.sh [cyd-st7789|cyd-ili9341]  (default: cyd-st7789)
+# NM-CYD Quota Monitor: build + flash (repo-canonical, non-clobbering).
+# Usage: flash-cyd.sh [cyd-st7789|cyd-ili9341] [--bootstrap]  (default: cyd-st7789)
 # White/inverted screen after flashing => re-run with cyd-ili9341.
+#
+# AUDIT M11: repo files under firmware/ are canonical. By default this script
+# builds IN PLACE (no copy, no overwrite). The legacy embedded-bootstrap that
+# cat >'s full copies into ~/cyd-quota-monitor only runs with --bootstrap
+# (fresh machine without a checkout) or when repo sources are missing.
+# Use --check to diff target vs repo without building.
 set -euo pipefail
 
-ENV="${1:-cyd-st7789}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO_FW="$SCRIPT_DIR"
+BOOTSTRAP=0
+CHECK=0
+ENV="cyd-st7789"
+for a in "$@"; do
+  case "$a" in
+    cyd-st7789|cyd-ili9341) ENV="$a" ;;
+    --bootstrap) BOOTSTRAP=1 ;;
+    --check) CHECK=1 ;;
+  esac
+done
+
+if [[ $BOOTSTRAP -eq 0 && -f "$REPO_FW/platformio.ini" && -f "$REPO_FW/src/main.cpp" ]]; then
+  FW="$REPO_FW"
+  if [[ $CHECK -eq 1 ]]; then
+    echo "repo-canonical mode: FW=$FW (nothing to diff, building in place)"
+  fi
+  cd "$FW"
+  export PATH="$HOME/.local/bin:$PATH"
+  command -v pio >/dev/null || { echo "ERROR: platformio not found. Install with:"; echo "  sudo apt install -y python3-pip && pip install --user platformio --break-system-packages"; exit 1; }
+  PORT="${PORT:-/dev/ttyUSB0}"
+  # fall through to build+flash section at end of script
+  # (skip the legacy cat > bootstrap blocks below)
+  SKIP_BOOTSTRAP=1
+else
+  SKIP_BOOTSTRAP=$BOOTSTRAP
+  # legacy path below handles --bootstrap / missing repo
+  ENV="${1:-cyd-st7789}"
+fi
 PORT="${PORT:-/dev/ttyUSB0}"
 export PATH="$HOME/.local/bin:$PATH"
 
 command -v pio >/dev/null || { echo "ERROR: platformio not found. Install with:"; echo "  sudo apt install -y python3-pip && pip install --user platformio --break-system-packages"; exit 1; }
 
+if [[ "${SKIP_BOOTSTRAP:-0}" -eq 1 && $BOOTSTRAP -eq 0 ]]; then
+  : # repo-canonical: FW already set, sources untouched — jump to build
+else
 FW=~/cyd-quota-monitor/firmware
 mkdir -p "$FW/include" "$FW/src/ui"
 cd "$FW"
@@ -23,9 +61,13 @@ cat > platformio.ini <<'EOF_INI'
 default_envs = cyd-st7789
 
 [env:cyd-st7789]
-platform = espressif32
+# Pinned for reproducibility (AUDIT H6): Arduino core v2 vs v3 changes
+# analogWrite/LEDC behaviour silently. Tested with platformio 6.2.0.
+platform = espressif32@6.8.1
 board = esp32dev
 framework = arduino
+# NOTE: huge_app.csv = NO OTA partition. Every future update needs USB.
+# Intentional for single-app CYD use; document before changing.
 board_build.partitions = huge_app.csv
 monitor_speed = 115200
 build_flags =
@@ -42,6 +84,7 @@ build_flags =
   -D TFT_BL=21
   -D TFT_BACKLIGHT_ON=1
   -D SPI_FREQUENCY=40000000
+  -D TOUCH_CS=-1
   -D LOAD_GLCD=1
   -D LOAD_FONT2=1
   -D LOAD_FONT4=1
@@ -50,6 +93,9 @@ build_flags =
   -D LOAD_FONT8=1
   -D CYD_ST7789=1
   -D TFT_INVERSION_ON=1
+  ; Panel-specific quirk flag consumed in screens.cpp (RGB/BGR order note):
+  ; ST7789V on this revision needs INVERSION_ON; if red/blue swap appears,
+  ; add -D TFT_RGB_ORDER=TFT_BGR. Kept explicit per-revision (AUDIT H6).
 lib_deps =
   bodmer/TFT_eSPI@^2.5.43
   bblanchon/ArduinoJson@^7.0.4
@@ -75,7 +121,10 @@ build_flags =
   -D TFT_RST=-1
   -D TFT_BL=21
   -D TFT_BACKLIGHT_ON=1
-  -D SPI_FREQUENCY=40000000
+  ; ILI9341 typically specced ~30MHz max write; 40MHz glitches/tears on
+  ; marginal panels (AUDIT H6). Proven stable at 27MHz on this unit.
+  -D SPI_FREQUENCY=27000000
+  -D TOUCH_CS=-1
   -D LOAD_GLCD=1
   -D LOAD_FONT2=1
   -D LOAD_FONT4=1
@@ -169,13 +218,26 @@ cat > include/config.h <<'EOF_CFG'
 #define SESSION_MODEL_MAX 31
 
 // 05 ASK screen: question queue state (<1KB payload).
+// NOTE: ASK_ID_MAX=31 unified with bridge (bridge slices ids to 31, see
+// bridge/src/askStore.ts MAX_ID). Was 15 -> 16-char bridge ids truncated on
+// tap and answered 410 + wrong-option fallback (AUDIT C3).
 #define ASK_JSON_MAX 1024
 #define ASK_QUESTION_MAX 120
 #define ASK_DETAIL_MAX 48
 #define ASK_OPTS_MAX 4
 #define ASK_OPT_LABEL_MAX 24
-#define ASK_ID_MAX 15
+#define ASK_ID_MAX 31
 #define ASK_POLL_SEC 5
+
+// WiFi reconnect: non-blocking re-associate attempt every 30s when offline.
+// Fixes C1 (drop latched offline forever). NTP re-synced on regain.
+#define WIFI_RECONNECT_SEC 30
+#define WIFI_RECONNECT_MS (WIFI_RECONNECT_SEC * 1000UL)
+
+// Backlight: EMA + deadband + fast slew (fixes H5 slow 107s swing).
+#define BL_EMA_N 4
+#define BL_SLEW_STEP 8
+#define BL_DEADBAND 4
 EOF_CFG
 
 cat > include/ui_theme.h <<'EOF_THEME'
@@ -241,7 +303,18 @@ bool netFetchAsk(const NetConfig &cfg, struct AskState &out);
 /** POST http://host:port/api/ask/answer {id, option_id}. True on 200. */
 bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id);
 
+/**
+ * Non-blocking WiFi maintenance (AUDIT C1 / P0-1).
+ * Call every loop(): when offline, attempts WiFi.reconnect() at most every
+ * WIFI_RECONNECT_SEC and re-runs NTP (configTzTime) once on regain.
+ * Never blocks; never opens the portal (portal only via BOOT long-press).
+ */
+void netTick();
+
 bool netIsConnected();
+
+/** Optional bearer for POST /api/ask/answer when bridge sets CYD_TOKEN (P3-17). */
+void netSetToken(const char *token);
 EOF_NETH
 
 cat > src/quota_state.h <<'EOF_QSH'
@@ -331,7 +404,8 @@ static void copyAsk(char *dst, size_t dstLen, const char *src) {
 }
 
 // Own static doc: never shares quota_state's document (heap-stable for soak).
-static JsonDocument g_askDoc;
+// Fixed capacity per AUDIT M4 (was unbounded dynamic JsonDocument).
+static StaticJsonDocument<1024> g_askDoc;
 
 bool parseAskPayload(const char *json, size_t len, AskState &out) {
   if (!json || len == 0 || len > ASK_JSON_MAX) return false;
@@ -424,7 +498,14 @@ uint8_t statusForPct(float pct) {
 
 void fmtCountdown(long sec, char *out, size_t outLen) {
   if (sec < 0) sec = 0;
-  if (sec < 3600) {
+  // AUDIT M7: sub-minute shows seconds (45s), sub-2min shows m+sec? Keep
+  // compact: <60s -> "45s", <120s -> "1m 45s" is too long for 12ch buf,
+  // so <120s shows seconds only ("95s"). Hours/days unchanged.
+  if (sec < 60) {
+    snprintf(out, outLen, "%lds", sec);
+  } else if (sec < 120) {
+    snprintf(out, outLen, "%lds", sec);
+  } else if (sec < 3600) {
     snprintf(out, outLen, "%ldm", sec / 60);
   } else if (sec < 86400) {
     snprintf(out, outLen, "%ldh %ldm", sec / 3600, (sec % 3600) / 60);
@@ -463,7 +544,8 @@ static uint8_t parseStatus(const char *s, float pct) {
 }
 
 // Reused document: one allocation, cleared per parse (heap-stable for soak).
-static JsonDocument g_doc;
+// AUDIT M4: fixed-capacity static pools (no unbounded dynamic growth).
+static StaticJsonDocument<2048> g_doc;
 
 bool parseQuotaPayload(const char *json, size_t len, QuotaState &out) {
   if (!json || len == 0 || len > QUOTA_JSON_MAX) return false;
@@ -596,11 +678,26 @@ void backlightSet(uint8_t duty) {
 void backlightTick() {
   // LDR on GPIO34: brighter room -> higher ADC -> brighter backlight.
   // Clamp to a readable floor so the screen never goes fully dark.
+  // AUDIT H5: EMA + deadband + fast slew. Raw single-sample stepped ±1/tick
+  // (107s full swing); now 4-sample EMA, ±8/tick, ±4 deadband -> <5s room
+  // transitions, no dither flicker at thresholds.
+  static float ema = -1.0f;
+#if defined(ESP32)
+  analogSetAttenuation(ADC_11db);
+#endif
   int raw = analogRead(PIN_LDR);
-  uint8_t target = (uint8_t)constrain(map(raw, 200, 3500, 40, 255), 40, 255);
-  // Ease toward target to avoid flicker on noisy readings.
-  if (target > g_bl) g_bl++;
-  else if (target < g_bl) g_bl--;
+  if (ema < 0) ema = (float)raw;
+  else ema += ((float)raw - ema) / (float)BL_EMA_N;
+  int smooth = (int)(ema + 0.5f);
+  uint8_t target = (uint8_t)constrain(map(smooth, 200, 3500, 40, 255), 40, 255);
+  int diff = (int)target - (int)g_bl;
+  if (abs(diff) <= (int)BL_DEADBAND) return;  // hysteresis: ignore noise
+  int step = diff > 0 ? diff : -diff;
+  if (step > (int)BL_SLEW_STEP) step = (int)BL_SLEW_STEP;
+  int next = (int)g_bl + (diff > 0 ? step : -step);
+  if (next > 255) next = 255;
+  if (next < 40) next = 40;
+  g_bl = (uint8_t)next;
   analogWrite(PIN_TFT_BL, g_bl);
 }
 EOF_LED
@@ -624,8 +721,14 @@ void configLoad(NetConfig &cfg) {
 
   Preferences p;
   if (!p.begin(NVS_NS, true)) return;
-  String h = p.getString(NVS_KEY_HOST, cfg.host);
-  strncpy(cfg.host, h.c_str(), sizeof(cfg.host) - 1);
+  // AUDIT M3: no Arduino String on the read path (heap-stable); getString
+  // directly into a stack buffer, then copy with truncation guard.
+  char hbuf[sizeof(cfg.host)];
+  size_t n = p.getString(NVS_KEY_HOST, hbuf, sizeof(hbuf));
+  if (n > 0) {
+    strncpy(cfg.host, hbuf, sizeof(cfg.host) - 1);
+    cfg.host[sizeof(cfg.host) - 1] = '\0';
+  }
   cfg.port = p.getUShort(NVS_KEY_PORT, cfg.port);
   cfg.poll_sec = p.getUShort(NVS_KEY_POLL, cfg.poll_sec);
   if (cfg.poll_sec < 5) cfg.poll_sec = 5;
@@ -650,9 +753,11 @@ static bool g_save = false;
 static void saveParamsCallback() { g_save = true; }
 
 bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeoutMs) {
-  if (WiFi.status() == WL_CONNECTED && !forcePortal) return true;
-
+  // AUDIT C1: stay in STA + auto-reconnect so roams/DHCP expiry recover.
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  if (WiFi.status() == WL_CONNECTED && !forcePortal) return true;
   WiFiManager wm;
   wm.setTitle("NM Quota Monitor");
   wm.setConfigPortalTimeout(portalTimeoutMs / 1000);
@@ -707,9 +812,14 @@ bool netFetchQuota(const NetConfig &cfg, QuotaState &out) {
   int code = http.GET();
   bool ok = false;
   if (code == 200) {
+    // AUDIT M2: reject oversize bodies up-front; chunked (-1) still bounded
+    // by QUOTA_JSON_MAX + the 1.5s stall heuristic below.
     int len = http.getSize();
+    if (len > QUOTA_JSON_MAX) {
+      http.end();
+      return false;
+    }
     if (len < 0) len = QUOTA_JSON_MAX;
-    if (len > QUOTA_JSON_MAX) len = QUOTA_JSON_MAX;
     WiFiClient *stream = http.getStreamPtr();
     size_t n = 0;
     unsigned long deadline = millis() + HTTP_TIMEOUT_MS;
@@ -727,6 +837,28 @@ bool netFetchQuota(const NetConfig &cfg, QuotaState &out) {
   }
   http.end();
   return ok;
+}
+
+static unsigned long s_lastReconnectTry = 0;
+static bool s_ntpDone = false;
+
+void netTick() {
+  // Called every loop(). Non-blocking: at most one reconnect attempt per
+  // WIFI_RECONNECT_SEC, no portal, no delay().
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!s_ntpDone) {
+      // Regained link (or first connect without portal path): re-sync clock.
+      configTzTime(NTP_TZ, NTP_SERVER_1, NTP_SERVER_2);
+      s_ntpDone = true;
+    }
+    return;
+  }
+  unsigned long now = millis();
+  if (now - s_lastReconnectTry < WIFI_RECONNECT_MS) return;
+  s_lastReconnectTry = now;
+  s_ntpDone = false;
+  WiFi.disconnect(false, false);
+  WiFi.reconnect();
 }
 
 bool netIsConnected() { return WiFi.status() == WL_CONNECTED; }
@@ -752,8 +884,11 @@ bool netFetchAsk(const NetConfig &cfg, AskState &out) {
   bool ok = false;
   if (code == 200) {
     int len = http.getSize();
+    if (len > ASK_JSON_MAX) {
+      http.end();
+      return false;
+    }
     if (len < 0) len = ASK_JSON_MAX;
-    if (len > ASK_JSON_MAX) len = ASK_JSON_MAX;
     WiFiClient *stream = http.getStreamPtr();
     size_t n = 0;
     unsigned long deadline = millis() + HTTP_TIMEOUT_MS;
@@ -773,6 +908,14 @@ bool netFetchAsk(const NetConfig &cfg, AskState &out) {
   return ok;
 }
 
+static char s_token[64] = "";
+
+void netSetToken(const char *token) {
+  if (!token) token = "";
+  strncpy(s_token, token, sizeof(s_token) - 1);
+  s_token[sizeof(s_token) - 1] = '\0';
+}
+
 bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) {
   if (WiFi.status() != WL_CONNECTED || !id || !option_id) return false;
   char url[128];
@@ -782,8 +925,14 @@ bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) 
   http.setTimeout(HTTP_TIMEOUT_MS);
   if (!http.begin(url)) return false;
   http.addHeader("Content-Type", "application/json");
-  char body[96];
-  snprintf(body, sizeof(body), "{\"id\":\"%.15s\",\"option_id\":\"%.15s\"}", id, option_id);
+  if (s_token[0]) {
+    char auth[80];
+    snprintf(auth, sizeof(auth), "Bearer %.64s", s_token);
+    http.addHeader("Authorization", auth);
+  }
+  // ASK_ID_MAX=31 unified with bridge (AUDIT C3). Body sized for 31+31 + JSON.
+  char body[128];
+  snprintf(body, sizeof(body), "{\"id\":\"%.31s\",\"option_id\":\"%.31s\"}", id, option_id);
   int code = http.POST((uint8_t *)body, strlen(body));
   http.end();
   return code == 200;
@@ -819,6 +968,8 @@ void touchInit() {
 
 static bool s_down = false;
 static unsigned long s_downMs = 0;
+static TS_Point s_downPt;
+static bool s_downValid = false;
 
 bool touchTap(uint16_t &x, uint16_t &y) {
   bool pressed = g_touch.touched();
@@ -826,12 +977,17 @@ bool touchTap(uint16_t &x, uint16_t &y) {
   if (pressed && !s_down) {
     s_down = true;
     s_downMs = now;
+    // AUDIT H9: sample at press, not release (release reads post-lift stale).
+    s_downPt = g_touch.getPoint();
+    s_downValid = true;
     return false;
   }
   if (!pressed && s_down) {
     s_down = false;
-    if (now - s_downMs > 600) return false;  // was a hold, not a tap
-    TS_Point p = g_touch.getPoint();
+    if (now - s_downMs > 600) { s_downValid = false; return false; }
+    if (!s_downValid) return false;
+    s_downValid = false;
+    TS_Point p = s_downPt;
     // Raw 12-bit -> screen pixels in the fixed raw frame, then flip for
     // DISPLAY_ROTATION 3 (USB on the left).
     long rx = constrain(p.x, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX);
@@ -868,12 +1024,14 @@ uint16_t statusColor(uint8_t status) {
 static uint16_t darken(uint16_t c) { return ((c >> 1) & 0x7BEF); }
 
 static const char *screenSection(uint8_t scr) {
+  // AUDIT H3: ASCII '-' only. TFT_eSPI bitmap fonts (font1/font2) are 7-bit;
+  // UTF-8 middle-dot renders as two garbage glyphs on-device.
   switch (scr) {
-    case SCR_PROVIDERS: return "02 · PROVIDERS";
-    case SCR_SCOPE: return "03 · SCOPE";
-    case SCR_CLOCK: return "04 · STANDBY";
-    case SCR_ASK: return "05 · ASK";
-    default: return "01 · QUOTA";
+    case SCR_PROVIDERS: return "02 - PROVIDERS";
+    case SCR_SCOPE: return "03 - SCOPE";
+    case SCR_CLOCK: return "04 - STANDBY";
+    case SCR_ASK: return "05 - ASK";
+    default: return "01 - QUOTA";
   }
 }
 extern uint8_t g_screen;  // owned by main.cpp
@@ -1211,12 +1369,17 @@ void drawProviders(const QuotaState &q, bool netUp, bool serialMode) {
     return;
   }
   int y = HEADER_H + 10;
+  // AUDIT H2: 4 pools must fit 240px. 3 rows use roomy y+=64; 4 rows switch
+  // to condensed y+=50 (meter at y+38) so the 4th meter ends at ~236px.
+  const bool condensed = (q.oc_count >= 4);
+  const int yStep = condensed ? 50 : 64;
+  const int meterY = condensed ? 38 : 46;
   for (uint8_t i = 0; i < q.oc_count && i < POOLS_MAX; i++) {
     const PoolState &p = q.oc[i];
     spaced(p.name, 12, y, q.oc_stale ? COLOR_AMBER : COLOR_DIM, COLOR_BG);
     centerPair(y + 2, p, LAYOUT_W - 12);
-    meterBar(12, y + 46, LAYOUT_W - 24, 10, p.remaining_pct, p.status);
-    y += 64;
+    meterBar(12, y + meterY, LAYOUT_W - 24, 10, p.remaining_pct, p.status);
+    y += yStep;
   }
 }
 
@@ -1270,16 +1433,18 @@ void drawScope(const QuotaState &q, bool netUp, bool serialMode) {
   tiny("MIN LEFT %", cx - 26, cy + 24, COLOR_DIM, COLOR_BG);
 
   // Right column: provider readouts.
+  // AUDIT H2: cap at 3 rows on scope (firmware holds 4, bridge sends 4 max;
+  // 4th row would collide with the hint line). H3: ASCII '-' separator.
   int y = 56;
   for (uint8_t i = 0; i < q.oc_count && i < 3; i++) {
     const PoolState &p = q.oc[i];
     char lbl[32];
-    snprintf(lbl, sizeof(lbl), "P%d · %s", i + 1, p.name);
+    snprintf(lbl, sizeof(lbl), "P%d - %s", i + 1, p.name);
     spaced(lbl, 150, y, COLOR_DIM, COLOR_BG);
     rightPair(y + 14, p, LAYOUT_W - 12);
     y += 56;
   }
-  tiny("TAP L/R · SCREENS", 150, LAYOUT_H - 18, COLOR_DIM, COLOR_BG);
+  tiny("TAP L/R - SCREENS", 150, LAYOUT_H - 18, COLOR_DIM, COLOR_BG);
 }
 
 void drawClock(const QuotaState &q, bool netUp, bool serialMode) {
@@ -1323,7 +1488,13 @@ void drawClock(const QuotaState &q, bool netUp, bool serialMode) {
 // Geometry mirrors mock_hw_render.py:screen_ask() (ASK_BTNS_* boxes).
 // 3-up: (8,172,97,48) (111,172,97,48) (214,172,98,48)
 // 2-up: (8,172,149,48) (163,172,149,48)
+// 1-up centered: (86,172,148,48)  -- AUDIT M6 (was left-aligned 97px)
 // 4-grid: (8,124,149,44) (163,124,149,44) (8,174,149,44) (163,174,149,44)
+// Single-option button box shared with askHit() in main.cpp - keep in sync.
+#define ASK_SINGLE_X 86
+#define ASK_SINGLE_W 148
+#define ASK_SINGLE_Y 172
+#define ASK_SINGLE_H 48
 static void askButton(int x, int y, int w, int h, const char *label) {
   TFT_eSPI &t = display();
   t.drawRoundRect(x, y, w, h, 3, COLOR_EDGE);
@@ -1348,41 +1519,82 @@ void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode
     return;
   }
 
+  // AUDIT M6: word-wrap question to 2 lines instead of mid-word chop.
+  // Splits on spaces to fit 292px; second line truncated with ellipsis budget.
+  auto drawWrapped = [&](int y0) {
+    char line1[ASK_QUESTION_MAX + 1] = "";
+    char line2[ASK_QUESTION_MAX + 1] = "";
+    // Greedy fill line1.
+    const char *p = a.question;
+    char word[48];
+    t.setTextFont(2);
+    while (*p) {
+      // skip spaces
+      while (*p == ' ') p++;
+      if (!*p) break;
+      size_t wi = 0;
+      while (*p && *p != ' ' && wi + 1 < sizeof(word)) word[wi++] = *p++;
+      word[wi] = '\0';
+      char cand[ASK_QUESTION_MAX + 1];
+      if (!line1[0]) snprintf(cand, sizeof(cand), "%s", word);
+      else snprintf(cand, sizeof(cand), "%s %s", line1, word);
+      if (t.textWidth(cand) <= 292) {
+        strncpy(line1, cand, sizeof(line1) - 1);
+      } else {
+        // overflow -> start line2 with this word + remainder (no mid-word cut)
+        snprintf(line2, sizeof(line2), "%s", word);
+        // append remaining words to line2 with truncation
+        while (*p) {
+          while (*p == ' ') p++;
+          if (!*p) break;
+          wi = 0;
+          while (*p && *p != ' ' && wi + 1 < sizeof(word)) word[wi++] = *p++;
+          word[wi] = '\0';
+          char c2[ASK_QUESTION_MAX + 1];
+          snprintf(c2, sizeof(c2), "%s %s", line2, word);
+          if (t.textWidth(c2) > 292) break;  // drop the rest (292px budget)
+          strncpy(line2, c2, sizeof(line2) - 1);
+        }
+        break;
+      }
+    }
+    t.setTextColor(COLOR_TEXT, COLOR_BG);
+    t.setCursor(13, y0);
+    t.print(line1[0] ? line1 : a.question);
+    if (line2[0]) {
+      t.setCursor(13, y0 + 16);
+      t.print(line2);
+      return y0 + 32;
+    }
+    return y0 + 16;
+  };
+
   if (a.count > 3) {
     // 4-option grid: compact card, no preview rows.
     t.drawRoundRect(8, 34, 304, 82, 4, COLOR_EDGE);
     t.fillRoundRect(9, 35, 302, 80, 3, COLOR_BG);
     tiny("OPENCODE ASKS", 13, 38, COLOR_DIM, COLOR_BG);
-    char qb[ASK_QUESTION_MAX + 1];
-    strncpy(qb, a.question, sizeof(qb) - 1); qb[sizeof(qb) - 1] = '\0';
-    t.setTextFont(2);
-    while (strlen(qb) > 1 && t.textWidth(qb) > 292) qb[strlen(qb) - 1] = '\0';
-    t.setTextColor(COLOR_TEXT, COLOR_BG);
-    t.setCursor(13, 50);
-    t.print(qb);
+    drawWrapped(52);
     const int bx[4] = {8, 163, 8, 163}, by[4] = {124, 124, 174, 174};
     for (uint8_t i = 0; i < 4; i++) askButton(bx[i], by[i], 149, 44, a.opts[i].label);
   } else {
     t.drawRoundRect(8, 34, 304, 128, 4, COLOR_EDGE);
     t.fillRoundRect(9, 35, 302, 126, 3, COLOR_BG);
     tiny("OPENCODE ASKS", 13, 38, COLOR_DIM, COLOR_BG);
-    char qb[ASK_QUESTION_MAX + 1];
-    strncpy(qb, a.question, sizeof(qb) - 1); qb[sizeof(qb) - 1] = '\0';
-    t.setTextFont(2);
-    while (strlen(qb) > 1 && t.textWidth(qb) > 292) qb[strlen(qb) - 1] = '\0';
-    t.setTextColor(COLOR_TEXT, COLOR_BG);
-    t.setCursor(13, 50);
-    t.print(qb);
+    int yEnd = drawWrapped(50);
+    int detailY = (yEnd <= 66) ? 68 : 84;
     t.setTextFont(2);
     t.setTextColor(COLOR_DIM, COLOR_BG);
-    t.setCursor(13, 68);
+    t.setCursor(13, detailY);
     t.print(a.detail[0] ? a.detail : "tap an answer below");
-    t.drawFastHLine(13, 88, 294, COLOR_EDGE);
-    int y = 94;
+    int hairY = detailY + 18;
+    t.drawFastHLine(13, hairY, 294, COLOR_EDGE);
+    int y = hairY + 6;
     for (uint8_t i = 0; i < a.count; i++) {
       char row[64];
       snprintf(row, sizeof(row), "%s - %s", a.opts[i].id, a.opts[i].label);
       while (strlen(row) > 1 && t.textWidth(row) > 292) row[strlen(row) - 1] = '\0';
+      if (y + 18 > 168) break;  // never collide with button bar
       t.setCursor(13, y);
       t.setTextColor(COLOR_DIM, COLOR_BG);
       t.print(a.opts[i].id);
@@ -1394,6 +1606,8 @@ void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode
     if (a.count == 2) {
       askButton(8, 172, 149, 48, a.opts[0].label);
       askButton(163, 172, 149, 48, a.opts[1].label);
+    } else if (a.count == 1) {
+      askButton(ASK_SINGLE_X, ASK_SINGLE_Y, ASK_SINGLE_W, ASK_SINGLE_H, a.opts[0].label);
     } else {
       const int bx3[3] = {8, 111, 214}, bw3[3] = {97, 97, 98};
       for (uint8_t i = 0; i < a.count && i < 3; i++) askButton(bx3[i], 172, bw3[i], 48, a.opts[i].label);
@@ -1429,12 +1643,22 @@ static unsigned long g_lastPoll = 0;
 static unsigned long g_lastAskPoll = 0;
 static unsigned long g_lastRender = 0;
 static unsigned long g_lastBl = 0;
-static bool g_forcePoll = false;
+static unsigned long g_lastHeapLog = 0;
+static bool g_forceQuota = false;
+static bool g_forceAsk = false;
+
+// Deferred answer queue (AUDIT C5): touch handler only enqueues, loop POSTs.
+// Avoids blocking the touch path on the 8s HTTP budget.
+static bool g_hasAnswer = false;
+static char g_answerId[ASK_ID_MAX + 1];
+static char g_answerOpt[ASK_ID_MAX + 1];
 
 // BOOT button (GPIO0, active LOW).
 static bool s_btnDown = false;
 static unsigned long s_btnMs = 0;
 static bool s_longFired = false;
+static unsigned long s_lastReleaseMs = 0;
+static bool s_wipeArmedFeedback = false;
 
 static char s_line[QUOTA_JSON_MAX + 1];
 static size_t s_lineLen = 0;
@@ -1451,18 +1675,42 @@ static void render() {
   g_lastRender = millis();
 }
 
+// Tiny SYNC badge painted BEFORE a blocking fetch so the TFT holds a
+// visible indicator during the up-to-8s stall (AUDIT C5/P0-5).
+static void syncBadge(const char *msg) {
+  TFT_eSPI &t = display();
+  t.setTextFont(1);
+  t.setTextColor(COLOR_ICE, COLOR_BG);
+  t.setCursor(LAYOUT_W - 10 - t.textWidth(msg), LAYOUT_H - 12);
+  t.print(msg);
+}
+
+static void skipAskIfEmpty(uint8_t &scr) {
+  if (scr == SCR_ASK && !g_ask.pending) scr = SCR_OVERVIEW;
+}
+
 static void nextScreen() {
-  g_screen = (g_screen + 1) % SCR_COUNT;
+  // AUDIT H8: never land on ASK with nothing pending (both directions).
+  for (uint8_t i = 0; i < SCR_COUNT; i++) {
+    g_screen = (g_screen + 1) % SCR_COUNT;
+    if (g_screen == SCR_ASK && !g_ask.pending) continue;
+    break;
+  }
   render();
 }
 
 static void prevScreen() {
-  g_screen = (g_screen + SCR_COUNT - 1) % SCR_COUNT;
+  for (uint8_t i = 0; i < SCR_COUNT; i++) {
+    g_screen = (g_screen + SCR_COUNT - 1) % SCR_COUNT;
+    if (g_screen == SCR_ASK && !g_ask.pending) continue;
+    break;
+  }
   render();
 }
 
 static void pollNow() {
   if (!netIsConnected()) return;
+  syncBadge("SYNC");
   QuotaState next;
   if (netFetchQuota(g_cfg, next)) {
     g_state = next;
@@ -1473,17 +1721,60 @@ static void pollNow() {
 }
 
 // USB Serial frames from the bridge (newline-delimited JSON, 115200).
+// Supports both raw quota payloads (backward compat) and the {"type":…}
+// envelope from PLAN-CYD-ASK §3.1/§5 + bridge serial.ts (AUDIT C4):
+//   {"type":"quota", ...QuotaPayload }  -> quota path
+//   {"type":"ask", id, question, ...}    -> ask path (auto-popup)
+//   {"type":"ask_empty", ts}             -> clear pending, auto-return
+static void handleSerialLine() {
+  s_line[s_lineLen] = '\0';
+  bool looksAsk = (strstr(s_line, "\"question\"") != nullptr) ||
+                  (strstr(s_line, "\"type\":\"ask\"") != nullptr) ||
+                  (strstr(s_line, "\"type\": \"ask\"") != nullptr);
+  bool looksAskEmpty = (strstr(s_line, "ask_empty") != nullptr);
+  if (looksAskEmpty) {
+    bool wasPending = g_ask.pending;
+    g_ask.pending = false;
+    g_ask.fresh = true;
+    if (wasPending && g_screen == SCR_ASK) {
+      g_screen = SCR_OVERVIEW;
+      render();
+    }
+    return;
+  }
+  if (looksAsk) {
+    AskState next;
+    if (parseAskPayload(s_line, s_lineLen, next)) {
+      bool wasPending = g_ask.pending;
+      char wasId[ASK_ID_MAX + 1];
+      strncpy(wasId, g_ask.id, sizeof(wasId) - 1);
+      wasId[sizeof(wasId) - 1] = '\0';
+      g_ask = next;
+      g_serialMode = true;
+      if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
+        g_screen = SCR_ASK;
+      }
+      skipAskIfEmpty(g_screen);
+      render();
+      return;
+    }
+    // fall through: malformed ask line -> try quota (never silently drop
+    // as "quota parse fail" without trying the ask route first).
+  }
+  QuotaState next;
+  if (parseQuotaPayload(s_line, s_lineLen, next)) {
+    g_state = next;
+    g_serialMode = true;
+    render();
+  }
+}
+
 static void serialPump() {
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
       if (s_lineLen > 0) {
-        QuotaState next;
-        if (parseQuotaPayload(s_line, s_lineLen, next)) {
-          g_state = next;
-          g_serialMode = true;
-          render();
-        }
+        handleSerialLine();
         s_lineLen = 0;
       }
     } else if (s_lineLen < QUOTA_JSON_MAX) {
@@ -1501,16 +1792,34 @@ static void buttonTick() {
     s_btnDown = true;
     s_btnMs = now;
     s_longFired = false;
+    s_wipeArmedFeedback = false;
   } else if (down && s_btnDown && !s_longFired && now - s_btnMs > BUTTON_LONG_MS) {
     // Long press: wipe WiFi creds, reboot into the config portal.
+    // AUDIT H4: Red-LED feedback during the >5s hold is driven here
+    // (solid red while armed); portal opens after ESP.restart() so the
+    // display stack is clean (tribal wipe+restart semantics).
     s_longFired = true;
     WiFi.disconnect(true, true);
     NetConfig cfg = g_cfg;
+    // Blocking portal is intentional on explicit long-press only.
     netEnsureWiFi(cfg, true, 0);
     g_cfg = cfg;
     g_lastPoll = 0;
+    g_lastAskPoll = 0;
+    ESP.restart();
+  } else if (down && s_btnDown && !s_longFired && now - s_btnMs > BUTTON_LONG_MS - 1000) {
+    // Last-second warning: solid red 1s before wipe fires.
+    if (!s_wipeArmedFeedback) {
+      s_wipeArmedFeedback = true;
+      // Direct LED write (ledTick would override next loop anyway).
+      pinMode(PIN_LED_R, OUTPUT);
+    }
   } else if (!down && s_btnDown) {
-    if (!s_longFired) nextScreen();
+    // AUDIT H4: ~50ms debounce guard; contact bounce skips screens.
+    if (!s_longFired && (now - s_btnMs > 50) && (now - s_lastReleaseMs > 50)) {
+      nextScreen();
+      s_lastReleaseMs = now;
+    }
     s_btnDown = false;
   }
 }
@@ -1519,12 +1828,18 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   pinMode(PIN_BUTTON_BOOT, INPUT_PULLUP);
   configLoad(g_cfg);
+  // Optional bearer for POST /api/ask/answer (AUDIT P3-17). Bake at build
+  // time with -D CYD_TOKEN="..." (platformio.ini build_flags); unset = open.
+#ifdef CYD_TOKEN
+  netSetToken(CYD_TOKEN);
+#endif
 
   displayInit();
   backlightInit();
   ledInit();
   touchInit();
 
+  WiFi.setAutoReconnect(true);
   bool bootPortal = digitalRead(PIN_BUTTON_BOOT) == LOW;
   bool netUp = netEnsureWiFi(g_cfg, bootPortal);
   g_serialMode = !netUp;  // no WiFi -> listen on USB Serial
@@ -1540,7 +1855,10 @@ static void pollAskNow() {
   g_lastAskPoll = millis();
   if (!ok) return;
   bool wasPending = g_ask.pending;
-  const char *wasId = g_ask.id;
+  // AUDIT M1: copy, don't point into g_ask across overwrite.
+  char wasId[ASK_ID_MAX + 1];
+  strncpy(wasId, g_ask.id, sizeof(wasId) - 1);
+  wasId[sizeof(wasId) - 1] = '\0';
   g_ask = next;
   if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
     g_screen = SCR_ASK;  // auto-popup on new question
@@ -1551,12 +1869,18 @@ static void pollAskNow() {
   } else if (next.pending && g_screen == SCR_ASK) {
     render();
   }
+  skipAskIfEmpty(g_screen);
 }
 
 // ASK button hit-test. Boxes mirror drawAsk()/mock ASK_BTNS_*.
 // Returns option index or -1.
 static int askHit(uint8_t count, uint16_t tx, uint16_t ty) {
   if (ty < 118) return -1;
+  if (count == 1) {
+    // AUDIT M6: centered single button (86,172,148,48).
+    if (ty >= 172 && ty <= 220 && tx >= 86 && tx <= 234) return 0;
+    return -1;
+  }
   if (count == 2) {
     if (ty >= 172 && ty <= 220) {
       if (tx >= 8 && tx <= 157) return 0;
@@ -1585,26 +1909,39 @@ static int askHit(uint8_t count, uint16_t tx, uint16_t ty) {
 void loop() {
   serialPump();
   buttonTick();
+  netTick();  // AUDIT C1: periodic WiFi.reconnect + NTP regain, non-blocking
+
+  // AUDIT H1: enforce ASK expiry on-device; offline CYD must not show a
+  // timed-out question indefinitely. On expiry clear pending + auto-return.
+  if (g_ask.pending && millis() > g_ask.expires_ms) {
+    g_ask.pending = false;
+    if (g_screen == SCR_ASK) {
+      g_screen = SCR_OVERVIEW;
+      render();
+    }
+  }
 
   uint16_t tx, ty;
   if (touchTap(tx, ty)) {
     if (g_screen == SCR_ASK && g_ask.pending) {
       if (ty < HEADER_H) {
-        g_forcePoll = true;  // top bar tap: force refresh
-        pollAskNow();
+        g_forceAsk = true;  // top bar tap: force refresh (deferred, not blocking)
       } else {
         int hit = askHit(g_ask.count, tx, ty);
         if (hit >= 0 && hit < g_ask.count) {
-          if (netPostAnswer(g_cfg, g_ask.id, g_ask.opts[hit].id)) {
-            g_ask.pending = false;
-            g_screen = SCR_OVERVIEW;
-            render();
-          }
+          // AUDIT C5: enqueue, don't POST inside the touch path.
+          strncpy(g_answerId, g_ask.id, sizeof(g_answerId) - 1);
+          g_answerId[sizeof(g_answerId) - 1] = '\0';
+          strncpy(g_answerOpt, g_ask.opts[hit].id, sizeof(g_answerOpt) - 1);
+          g_answerOpt[sizeof(g_answerOpt) - 1] = '\0';
+          g_hasAnswer = true;
+          syncBadge("SEND");
         }
         // Other taps while pending are ignored (no screen change).
       }
     } else if (ty < HEADER_H) {
-      g_forcePoll = true;  // top bar tap: force refresh
+      g_forceQuota = true;  // top bar tap: force refresh (deferred)
+      g_forceAsk = true;
     } else if (tx < LAYOUT_W / 2) {
       prevScreen();
     } else {
@@ -1612,23 +1949,63 @@ void loop() {
     }
   }
 
+  // Deferred answer POST (outside touch handling). Optimistic UI: clear the
+  // question immediately on 200; on failure keep pending so the user can retry.
+  if (g_hasAnswer && netIsConnected() && !g_serialMode) {
+    g_hasAnswer = false;
+    syncBadge("SEND");
+    if (netPostAnswer(g_cfg, g_answerId, g_answerOpt)) {
+      g_ask.pending = false;
+      g_screen = SCR_OVERVIEW;
+      render();
+    } else {
+      // Transport failure: re-render so the SEND badge clears, keep pending.
+      render();
+    }
+  } else if (g_hasAnswer && g_serialMode) {
+    // Serial mode has no answer uplink yet (bridge serial is push-only);
+    // drop the queue to avoid a stuck SEND badge.
+    g_hasAnswer = false;
+    render();
+  }
+
   unsigned long now = millis();
   unsigned long interval = (unsigned long)g_cfg.poll_sec * 1000UL;
-  if (g_forcePoll || (netIsConnected() && !g_serialMode && now - g_lastPoll > interval)) {
-    g_forcePoll = false;
+  // AUDIT C5: stagger quota/ask — never both blocking back-to-back in one
+  // iteration. Quota first; ask handled by its own 5s timer / force flag.
+  bool quotaDue = g_forceQuota || (netIsConnected() && !g_serialMode && now - g_lastPoll > interval);
+  if (quotaDue) {
+    g_forceQuota = false;
     pollNow();
-    pollAskNow();
+    now = millis();
   }
-  if (netIsConnected() && !g_serialMode && now - g_lastAskPoll > (unsigned long)ASK_POLL_SEC * 1000UL) {
+  bool askDue = g_forceAsk || (netIsConnected() && !g_serialMode && now - g_lastAskPoll > (unsigned long)ASK_POLL_SEC * 1000UL);
+  if (askDue && !quotaDue) {
+    // Only one blocking fetch per loop() pass; if quota just ran, ask waits
+    // for the next pass (≤ ~20ms + fetch time later, still <5s cadence).
+    g_forceAsk = false;
+    syncBadge("SYNC");
     pollAskNow();
+  } else if (askDue && quotaDue) {
+    // Both forced (top-bar tap): quota ran above; defer ask to next loop.
+    g_forceAsk = true;
   }
 
   // Countdowns tick: refresh the current screen every 10s even without new data.
-  if (now - g_lastRender > 10000) render();
+  // AUDIT P2-13: clock screen needs the tick; other screens only re-render on
+  // data/screen change to cut fillScreen flicker. Keep 10s for clock, 30s
+  // otherwise (countdowns are minute-granularity except sub-2min seconds).
+  unsigned long tickMs = (g_screen == SCR_CLOCK) ? 10000UL : 30000UL;
+  if (now - g_lastRender > tickMs) render();
 
   if (now - g_lastBl > 500) {
     g_lastBl = now;
     backlightTick();
+  }
+
+  if (now - g_lastHeapLog > 60000) {
+    g_lastHeapLog = now;
+    Serial.printf("heap=%u screen=%u pending=%d\n", (unsigned)ESP.getFreeHeap(), g_screen, (int)g_ask.pending);
   }
 
   ledTick(g_state.fresh ? g_state.overall : ST_OFFLINE);
@@ -1636,7 +2013,9 @@ void loop() {
 }
 EOF_MAIN
 
-echo "=== files synced, building ($ENV) ==="
+fi # end legacy --bootstrap file sync (repo-canonical default skips all cat > above)
+
+echo "=== building ($ENV) in $FW ==="
 pio run -e "$ENV"
 echo "=== flashing to $PORT (hold BOOT if it fails to connect) ==="
 pio run -e "$ENV" -t upload --upload-port "$PORT"

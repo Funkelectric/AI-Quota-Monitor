@@ -204,12 +204,12 @@ def session_strip(d, idx=0):
 
 def screen_overview():
     img = Image.new("RGB", (W, H), BG); d = ImageDraw.Draw(img)
-    header(d, "01 · QUOTA"); hero(d); session_strip(d); strip(d)
+    header(d, "01 - QUOTA"); hero(d); session_strip(d); strip(d)
     return img
 
 def screen_providers():
     img = Image.new("RGB", (W, H), BG); d = ImageDraw.Draw(img)
-    header(d, "02 · WINDOWS")
+    header(d, "02 - WINDOWS")
     y = HEADER_H + 6
     for i, (name, pct, sec) in enumerate(DATA):
         spaced(d, (12, y), name, DIM)
@@ -238,7 +238,7 @@ def ring(d, cx, cy, r, th, frac, col):
 
 def screen_scope():
     img = Image.new("RGB", (W, H), BG); d = ImageDraw.Draw(img)
-    header(d, "03 · SCOPE")
+    header(d, "03 - SCOPE")
     cx, cy, r, th = 74, 128, 46, 10
     d.line([cx - r - 6, cy, cx + r + 6, cy], fill=EDGE)
     d.line([cx, cy - r - 6, cx, cy + r + 6], fill=EDGE)
@@ -257,13 +257,13 @@ def screen_scope():
     d.text((cx - 26, cy + 24), "MIN LEFT %", font=F1, fill=DIM)
     y = 56
     for i, (name, pct, sec) in enumerate(DATA):
-        spaced(d, (140, y), f"P{i + 1} · {name}", DIM)
+        spaced(d, (140, y), f"P{i + 1} - {name}", DIM)
         v = f"{pct:.1f}"
         d.text((W - 12 - int(d.textlength(v, font=F4)), y + 14), v, font=F4, fill=status(pct))
         cd = fmt_cd(sec)
         draw_f2(d, (W - 12 - f2_width(cd), y + 42), cd, DIM)
         y += 56
-    d.text((140, H - 14), "TAP L/R · SCREENS", font=F1, fill=DIM)
+    d.text((140, H - 14), "TAP L/R - SCREENS", font=F1, fill=DIM)
     return img
 
 def header2(d, section):
@@ -308,7 +308,7 @@ def solid_bar(d, x, y, w, h, pct, col):
 def screen_ov2():
     """01 QUOTA v2: 3 big rows (label + font4 % + h13 bar + countdown), strip."""
     img = Image.new("RGB", (W, H), BLACK); d = ImageDraw.Draw(img)
-    header2(d, "01 · QUOTA")
+    header2(d, "01 - QUOTA")
     for i, (name, pct, sec) in enumerate(DATA):
         Y = [36, 92, 148][i]
         draw_f2(d, (12, Y), short_name(name), TEXT)
@@ -322,7 +322,7 @@ def screen_ov2():
 def screen_prov2():
     """02 WINDOWS v2: font6 % + status dot + white reset + h14 bars, full height."""
     img = Image.new("RGB", (W, H), BLACK); d = ImageDraw.Draw(img)
-    header2(d, "02 · WINDOWS")
+    header2(d, "02 - WINDOWS")
     for i, (name, pct, sec) in enumerate(DATA):
         Y = [34, 104, 174][i]
         col = status(pct)
@@ -337,7 +337,7 @@ def screen_prov2():
 def screen_scope2():
     """03 SCOPE v2: thick ring + font6 MIN + status word left, compact rows right."""
     img = Image.new("RGB", (W, H), BLACK); d = ImageDraw.Draw(img)
-    header2(d, "03 · SCOPE")
+    header2(d, "03 - SCOPE")
     cx, cy, r, th = 80, 122, 44, 14
     m = min(p for _, p, _ in DATA)
     ring(d, cx, cy, r, th, m / 100, status(m))
@@ -359,13 +359,13 @@ def screen_scope2():
         v = f"{pct:.1f}%"
         d.text((308 - int(d.textlength(v, font=F4)), Y - 2), v, font=F4, fill=status(pct))
         solid_bar(d, 150, Y + 24, 158, 10, pct, status(pct))
-    d.text((150, 222), "TAP L/R · SCREENS", font=F1, fill=DIM2)
+    d.text((150, 222), "TAP L/R - SCREENS", font=F1, fill=DIM2)
     return img
 
 def screen_clock2():
     """04 STANDBY v2: font6-x2 desk clock, date+status, 3 labeled h12 bars."""
     img = Image.new("RGB", (W, H), BLACK); d = ImageDraw.Draw(img)
-    header2(d, "04 · STANDBY")
+    header2(d, "04 - STANDBY")
     hm = "12:04"
     tw = int(d.textlength(hm, font=F6B))
     d.text(((W - tw) // 2, 50), hm, font=F6B, fill=TEXT)
@@ -381,15 +381,17 @@ def screen_clock2():
     return img
 
 ASK_Q = "Which model for refactor?"
-ASK_SUB = "session: curious-meadow · 2m ago"
-ASK_OPTS = [("1 · Quick", "small diff, cheap"),
-            ("2 · Full", "thorough refactor"),
-            ("3 · Skip", "decide later")]
+ASK_SUB = "session: curious-meadow - 2m ago"
+ASK_OPTS = [("1 - Quick", "small diff, cheap"),
+            ("2 - Full", "thorough refactor"),
+            ("3 - Skip", "decide later")]
 ASK_FOCUS = 1  # pending/selected option index; ICE outline + ICE text
 # Button hitboxes (x, y, w, h). 3-up: (304-2*6)/3 -> 97,97,98.
 ASK_BTNS_3 = [(8, 172, 97, 48), (111, 172, 97, 48), (214, 172, 98, 48)]
 # 2-option fallback: (304-6)/2 = 149 wide.
 ASK_BTNS_2 = [(8, 172, 149, 48), (163, 172, 149, 48)]
+# 1-option centered (AUDIT M6, mirrors firmware ASK_SINGLE_*): 148 wide.
+ASK_BTNS_1 = [(86, 172, 148, 48)]
 # 4-option fallback 2x2 grid, 44px rows: (304-6)/2 wide.
 ASK_BTNS_4 = [(8, 124, 149, 44), (163, 124, 149, 44),
               (8, 174, 149, 44), (163, 174, 149, 44)]
@@ -404,7 +406,7 @@ def ask_buttons(d, labels, boxes, focus):
 
 def screen_ask():
     img = Image.new("RGB", (W, H), BG); d = ImageDraw.Draw(img)
-    header(d, "05 · ASK")
+    header(d, "05 - ASK")
     # Question card 8..311 x 34..162 (mirrors hero/meterBar hairlines).
     d.rounded_rectangle([8, 34, 311, 162], 4, outline=EDGE)
     d.rounded_rectangle([9, 35, 310, 161], 3, outline=None, fill=BG)
@@ -428,7 +430,7 @@ def screen_ask():
         draw_f2(d, (nx, y), rest, TEXT if i == ASK_FOCUS else DIM)
         y += 18
     ask_buttons(d, [s for s, _ in ASK_OPTS], ASK_BTNS_3, ASK_FOCUS)
-    hint = "TAP TO ANSWER · BOOT = NEXT"
+    hint = "TAP TO ANSWER - BOOT = NEXT"
     d.text(((W - int(d.textlength(hint, font=F1))) // 2, 226), hint, font=F1, fill=DIM)
     return img
 

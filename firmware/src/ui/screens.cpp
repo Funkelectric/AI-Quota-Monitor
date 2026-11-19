@@ -17,12 +17,14 @@ uint16_t statusColor(uint8_t status) {
 static uint16_t darken(uint16_t c) { return ((c >> 1) & 0x7BEF); }
 
 static const char *screenSection(uint8_t scr) {
+  // AUDIT H3: ASCII '-' only. TFT_eSPI bitmap fonts (font1/font2) are 7-bit;
+  // UTF-8 middle-dot renders as two garbage glyphs on-device.
   switch (scr) {
-    case SCR_PROVIDERS: return "02 · PROVIDERS";
-    case SCR_SCOPE: return "03 · SCOPE";
-    case SCR_CLOCK: return "04 · STANDBY";
-    case SCR_ASK: return "05 · ASK";
-    default: return "01 · QUOTA";
+    case SCR_PROVIDERS: return "02 - PROVIDERS";
+    case SCR_SCOPE: return "03 - SCOPE";
+    case SCR_CLOCK: return "04 - STANDBY";
+    case SCR_ASK: return "05 - ASK";
+    default: return "01 - QUOTA";
   }
 }
 extern uint8_t g_screen;  // owned by main.cpp
@@ -360,12 +362,17 @@ void drawProviders(const QuotaState &q, bool netUp, bool serialMode) {
     return;
   }
   int y = HEADER_H + 10;
+  // AUDIT H2: 4 pools must fit 240px. 3 rows use roomy y+=64; 4 rows switch
+  // to condensed y+=50 (meter at y+38) so the 4th meter ends at ~236px.
+  const bool condensed = (q.oc_count >= 4);
+  const int yStep = condensed ? 50 : 64;
+  const int meterY = condensed ? 38 : 46;
   for (uint8_t i = 0; i < q.oc_count && i < POOLS_MAX; i++) {
     const PoolState &p = q.oc[i];
     spaced(p.name, 12, y, q.oc_stale ? COLOR_AMBER : COLOR_DIM, COLOR_BG);
     centerPair(y + 2, p, LAYOUT_W - 12);
-    meterBar(12, y + 46, LAYOUT_W - 24, 10, p.remaining_pct, p.status);
-    y += 64;
+    meterBar(12, y + meterY, LAYOUT_W - 24, 10, p.remaining_pct, p.status);
+    y += yStep;
   }
 }
 
@@ -419,16 +426,18 @@ void drawScope(const QuotaState &q, bool netUp, bool serialMode) {
   tiny("MIN LEFT %", cx - 26, cy + 24, COLOR_DIM, COLOR_BG);
 
   // Right column: provider readouts.
+  // AUDIT H2: cap at 3 rows on scope (firmware holds 4, bridge sends 4 max;
+  // 4th row would collide with the hint line). H3: ASCII '-' separator.
   int y = 56;
   for (uint8_t i = 0; i < q.oc_count && i < 3; i++) {
     const PoolState &p = q.oc[i];
     char lbl[32];
-    snprintf(lbl, sizeof(lbl), "P%d · %s", i + 1, p.name);
+    snprintf(lbl, sizeof(lbl), "P%d - %s", i + 1, p.name);
     spaced(lbl, 150, y, COLOR_DIM, COLOR_BG);
     rightPair(y + 14, p, LAYOUT_W - 12);
     y += 56;
   }
-  tiny("TAP L/R · SCREENS", 150, LAYOUT_H - 18, COLOR_DIM, COLOR_BG);
+  tiny("TAP L/R - SCREENS", 150, LAYOUT_H - 18, COLOR_DIM, COLOR_BG);
 }
 
 void drawClock(const QuotaState &q, bool netUp, bool serialMode) {
@@ -472,7 +481,13 @@ void drawClock(const QuotaState &q, bool netUp, bool serialMode) {
 // Geometry mirrors mock_hw_render.py:screen_ask() (ASK_BTNS_* boxes).
 // 3-up: (8,172,97,48) (111,172,97,48) (214,172,98,48)
 // 2-up: (8,172,149,48) (163,172,149,48)
+// 1-up centered: (86,172,148,48)  -- AUDIT M6 (was left-aligned 97px)
 // 4-grid: (8,124,149,44) (163,124,149,44) (8,174,149,44) (163,174,149,44)
+// Single-option button box shared with askHit() in main.cpp - keep in sync.
+#define ASK_SINGLE_X 86
+#define ASK_SINGLE_W 148
+#define ASK_SINGLE_Y 172
+#define ASK_SINGLE_H 48
 static void askButton(int x, int y, int w, int h, const char *label) {
   TFT_eSPI &t = display();
   t.drawRoundRect(x, y, w, h, 3, COLOR_EDGE);
@@ -497,41 +512,82 @@ void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode
     return;
   }
 
+  // AUDIT M6: word-wrap question to 2 lines instead of mid-word chop.
+  // Splits on spaces to fit 292px; second line truncated with ellipsis budget.
+  auto drawWrapped = [&](int y0) {
+    char line1[ASK_QUESTION_MAX + 1] = "";
+    char line2[ASK_QUESTION_MAX + 1] = "";
+    // Greedy fill line1.
+    const char *p = a.question;
+    char word[48];
+    t.setTextFont(2);
+    while (*p) {
+      // skip spaces
+      while (*p == ' ') p++;
+      if (!*p) break;
+      size_t wi = 0;
+      while (*p && *p != ' ' && wi + 1 < sizeof(word)) word[wi++] = *p++;
+      word[wi] = '\0';
+      char cand[ASK_QUESTION_MAX + 1];
+      if (!line1[0]) snprintf(cand, sizeof(cand), "%s", word);
+      else snprintf(cand, sizeof(cand), "%s %s", line1, word);
+      if (t.textWidth(cand) <= 292) {
+        strncpy(line1, cand, sizeof(line1) - 1);
+      } else {
+        // overflow -> start line2 with this word + remainder (no mid-word cut)
+        snprintf(line2, sizeof(line2), "%s", word);
+        // append remaining words to line2 with truncation
+        while (*p) {
+          while (*p == ' ') p++;
+          if (!*p) break;
+          wi = 0;
+          while (*p && *p != ' ' && wi + 1 < sizeof(word)) word[wi++] = *p++;
+          word[wi] = '\0';
+          char c2[ASK_QUESTION_MAX + 1];
+          snprintf(c2, sizeof(c2), "%s %s", line2, word);
+          if (t.textWidth(c2) > 292) break;  // drop the rest (292px budget)
+          strncpy(line2, c2, sizeof(line2) - 1);
+        }
+        break;
+      }
+    }
+    t.setTextColor(COLOR_TEXT, COLOR_BG);
+    t.setCursor(13, y0);
+    t.print(line1[0] ? line1 : a.question);
+    if (line2[0]) {
+      t.setCursor(13, y0 + 16);
+      t.print(line2);
+      return y0 + 32;
+    }
+    return y0 + 16;
+  };
+
   if (a.count > 3) {
     // 4-option grid: compact card, no preview rows.
     t.drawRoundRect(8, 34, 304, 82, 4, COLOR_EDGE);
     t.fillRoundRect(9, 35, 302, 80, 3, COLOR_BG);
     tiny("OPENCODE ASKS", 13, 38, COLOR_DIM, COLOR_BG);
-    char qb[ASK_QUESTION_MAX + 1];
-    strncpy(qb, a.question, sizeof(qb) - 1); qb[sizeof(qb) - 1] = '\0';
-    t.setTextFont(2);
-    while (strlen(qb) > 1 && t.textWidth(qb) > 292) qb[strlen(qb) - 1] = '\0';
-    t.setTextColor(COLOR_TEXT, COLOR_BG);
-    t.setCursor(13, 50);
-    t.print(qb);
+    drawWrapped(52);
     const int bx[4] = {8, 163, 8, 163}, by[4] = {124, 124, 174, 174};
     for (uint8_t i = 0; i < 4; i++) askButton(bx[i], by[i], 149, 44, a.opts[i].label);
   } else {
     t.drawRoundRect(8, 34, 304, 128, 4, COLOR_EDGE);
     t.fillRoundRect(9, 35, 302, 126, 3, COLOR_BG);
     tiny("OPENCODE ASKS", 13, 38, COLOR_DIM, COLOR_BG);
-    char qb[ASK_QUESTION_MAX + 1];
-    strncpy(qb, a.question, sizeof(qb) - 1); qb[sizeof(qb) - 1] = '\0';
-    t.setTextFont(2);
-    while (strlen(qb) > 1 && t.textWidth(qb) > 292) qb[strlen(qb) - 1] = '\0';
-    t.setTextColor(COLOR_TEXT, COLOR_BG);
-    t.setCursor(13, 50);
-    t.print(qb);
+    int yEnd = drawWrapped(50);
+    int detailY = (yEnd <= 66) ? 68 : 84;
     t.setTextFont(2);
     t.setTextColor(COLOR_DIM, COLOR_BG);
-    t.setCursor(13, 68);
+    t.setCursor(13, detailY);
     t.print(a.detail[0] ? a.detail : "tap an answer below");
-    t.drawFastHLine(13, 88, 294, COLOR_EDGE);
-    int y = 94;
+    int hairY = detailY + 18;
+    t.drawFastHLine(13, hairY, 294, COLOR_EDGE);
+    int y = hairY + 6;
     for (uint8_t i = 0; i < a.count; i++) {
       char row[64];
       snprintf(row, sizeof(row), "%s - %s", a.opts[i].id, a.opts[i].label);
       while (strlen(row) > 1 && t.textWidth(row) > 292) row[strlen(row) - 1] = '\0';
+      if (y + 18 > 168) break;  // never collide with button bar
       t.setCursor(13, y);
       t.setTextColor(COLOR_DIM, COLOR_BG);
       t.print(a.opts[i].id);
@@ -543,6 +599,8 @@ void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode
     if (a.count == 2) {
       askButton(8, 172, 149, 48, a.opts[0].label);
       askButton(163, 172, 149, 48, a.opts[1].label);
+    } else if (a.count == 1) {
+      askButton(ASK_SINGLE_X, ASK_SINGLE_Y, ASK_SINGLE_W, ASK_SINGLE_H, a.opts[0].label);
     } else {
       const int bx3[3] = {8, 111, 214}, bw3[3] = {97, 97, 98};
       for (uint8_t i = 0; i < a.count && i < 3; i++) askButton(bx3[i], 172, bw3[i], 48, a.opts[i].label);

@@ -9,7 +9,8 @@ static void copyAsk(char *dst, size_t dstLen, const char *src) {
 }
 
 // Own static doc: never shares quota_state's document (heap-stable for soak).
-static JsonDocument g_askDoc;
+// Fixed capacity per AUDIT M4 (was unbounded dynamic JsonDocument).
+static StaticJsonDocument<1024> g_askDoc;
 
 bool parseAskPayload(const char *json, size_t len, AskState &out) {
   if (!json || len == 0 || len > ASK_JSON_MAX) return false;

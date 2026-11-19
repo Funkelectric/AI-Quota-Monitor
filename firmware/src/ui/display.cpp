@@ -26,6 +26,8 @@ void touchInit() {
 
 static bool s_down = false;
 static unsigned long s_downMs = 0;
+static TS_Point s_downPt;
+static bool s_downValid = false;
 
 bool touchTap(uint16_t &x, uint16_t &y) {
   bool pressed = g_touch.touched();
@@ -33,12 +35,17 @@ bool touchTap(uint16_t &x, uint16_t &y) {
   if (pressed && !s_down) {
     s_down = true;
     s_downMs = now;
+    // AUDIT H9: sample at press, not release (release reads post-lift stale).
+    s_downPt = g_touch.getPoint();
+    s_downValid = true;
     return false;
   }
   if (!pressed && s_down) {
     s_down = false;
-    if (now - s_downMs > 600) return false;  // was a hold, not a tap
-    TS_Point p = g_touch.getPoint();
+    if (now - s_downMs > 600) { s_downValid = false; return false; }
+    if (!s_downValid) return false;
+    s_downValid = false;
+    TS_Point p = s_downPt;
     // Raw 12-bit -> screen pixels in the fixed raw frame, then flip for
     // DISPLAY_ROTATION 3 (USB on the left).
     long rx = constrain(p.x, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX);
