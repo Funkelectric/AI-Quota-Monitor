@@ -98,7 +98,7 @@
 #define BUTTON_LONG_MS 5000
 
 // Firmware version shown in the readout strip (VER field), both hardware.
-#define FW_VERSION "v0.1"
+#define FW_VERSION "v0.2"
 
 // Compact payload guard: ESP32 parses this on the stack.
 #define QUOTA_JSON_MAX 2048

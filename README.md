@@ -2,7 +2,7 @@
 
 Standalone desktop hardware dashboard for real-time **OpenCode** quota
 monitoring (Go 5h / Week / Month windows, daily tokens, live session
-readout), **firmware v0.1** shown in the readout strip
+readout), **firmware v0.2** shown in the readout strip
 (`TOKENS | VER | NEXT`).
 
 ## Screenshots
@@ -105,7 +105,7 @@ permission errors.
 | Backlight / power | BL `GPIO21` | BL `GPIO19` active-low, LCD power rail `GPIO21` active-low (must be enabled or the screen stays black) |
 | Screens | 01 QUOTA · 02 WINDOWS · 03 SCOPE · 04 STANDBY · 05 ASK | **01 QUOTA · 02 WINDOWS only** (same bridge, same data) |
 | Env | `cyd-st7789` (default) / `cyd-ili9341` | `tv154-st7789` (`tv154-diag` = PWR/BL sweep test) |
-| Firmware | v0.1 (strip VER field) | v0.1 (strip VER field) |
+| Firmware | v0.2 (strip VER field) | v0.1 (strip VER field) |
 
 ## 1. Bridge — running manual (detail)
 
@@ -200,7 +200,7 @@ TV-154: tap top key = next screen (01↔02), hold 5 s = wipe + portal):
 1. **01 · QUOTA** — hero quota curve, per-window labels, SESSION strip
    (conversation title + pretty model, `x/y` pager rotating every 10 s,
    pager hidden when only one session is active), TOKENS / VER / NEXT strip
-   (VER = firmware version, currently `v0.1`).
+   (VER = firmware version, currently `v0.2`).
 2. **02 · WINDOWS** — per-window rows with centered big `%` and
    right-aligned readable reset countdowns + thick bars.
 3. **03 · SCOPE** (CYD only) — big min-level ring gauge + per-window readouts.
