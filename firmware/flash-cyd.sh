@@ -102,6 +102,49 @@ lib_deps =
   tzapu/WiFiManager@^2.0.17
   https://github.com/PaulStoffregen/XPT2046_Touchscreen.git
 
+[env:tv154-diag]
+# Sweep diagnostic: tries all LCD-PWR(21) x BL(19) combos, reports via serial.
+# Same panel flags as tv154-st7789; only diag_main.cpp compiles (see filter).
+platform = espressif32@6.8.1
+board = esp32dev
+framework = arduino
+board_build.partitions = huge_app.csv
+monitor_speed = 115200
+build_flags =
+  -D USER_SETUP_LOADED=1
+  -D ST7789_DRIVER=1
+  -D TV154=1
+  -D CGRAM_OFFSET=1
+  -D USE_HSPI_PORT=1
+  -D TFT_WIDTH=240
+  -D TFT_HEIGHT=240
+  -D TFT_MOSI=13
+  -D TFT_MISO=-1
+  -D TFT_SCLK=14
+  -D TFT_CS=15
+  -D TFT_DC=2
+  -D TFT_RST=-1
+  -D TFT_BL=19
+  -D TFT_BACKLIGHT_ON=0
+  -D SPI_FREQUENCY=40000000
+  -D SPI_READ_FREQUENCY=20000000
+  -D TFT_INVERSION_ON=1
+  -D TOUCH_CS=-1
+  -D LOAD_GLCD=1
+  -D LOAD_FONT2=1
+lib_deps =
+  Bodmer/TFT_eSPI@^2.5.43
+build_src_filter =
+  +<*>
+  -<.git/>
+  -<main.cpp>
+  -<network.cpp>
+  -<quota_state.cpp>
+  -<ask_state.cpp>
+  -<led_controller.cpp>
+  -<ui/display.cpp>
+  -<ui/screens.cpp>
+
 [env:cyd-ili9341]
 extends = env:cyd-st7789
 ; Proven on this unit (2026-11-19): alt ILI9341 init fixes column offset,
@@ -2275,6 +2318,54 @@ void loop() {
 EOF_MAIN
 
 cat > src/diag_main.cpp <<'EOF_DIAG'
+// TV-154 power/backlight sweep diagnostic (env: tv154-diag).
+// Cycles LCD power rail (GPIO21) x backlight (GPIO19) HIGH/LOW combos,
+// re-inits the panel each step, fills a distinct color + logs to serial.
+// User reports which color (if any) lights the screen.
+#include <Arduino.h>
+#include <TFT_eSPI.h>
+
+static TFT_eSPI s_tft;
+
+struct Combo {
+  uint8_t pwr;
+  uint8_t bl;
+  const char *name;
+  uint16_t color;
+};
+
+static const Combo kCombos[] = {
+  {LOW, LOW, "0 PWR-LOW BL-LOW white", TFT_WHITE},
+  {LOW, HIGH, "1 PWR-LOW BL-HIGH red", TFT_RED},
+  {HIGH, LOW, "2 PWR-HIGH BL-LOW green", TFT_GREEN},
+  {HIGH, HIGH, "3 PWR-HIGH BL-HIGH blue", TFT_BLUE},
+};
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("[diag] tv154 PWR/BL sweep start (4s per step)");
+}
+
+void loop() {
+  static int i = 0;
+  const Combo &c = kCombos[i % 4];
+  pinMode(21, OUTPUT);
+  digitalWrite(21, c.pwr);
+  pinMode(19, OUTPUT);
+  delay(250);  // let the rail settle before panel init
+  s_tft.init();
+  s_tft.setRotation(0);
+  s_tft.invertDisplay(true);
+  s_tft.fillScreen(c.color);
+  digitalWrite(19, c.bl);
+  s_tft.setTextColor(TFT_BLACK, c.color);
+  s_tft.drawCentreString(c.name, 120, 110, 2);
+  Serial.printf("[diag] step %d: %s rawT9=%d REPORT IF VISIBLE\n", i % 4, c.name,
+                touchRead(T9));
+  delay(4000);
+  i++;
+}
 EOF_DIAG
 
 fi # end legacy --bootstrap file sync (repo-canonical default skips all cat > above)
