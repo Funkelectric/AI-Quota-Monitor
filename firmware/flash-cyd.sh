@@ -217,6 +217,12 @@ lib_deps =
   bodmer/TFT_eSPI@^2.5.43
   bblanchon/ArduinoJson@^7.0.4
   tzapu/WiFiManager@^2.0.17
+# diag_main.cpp belongs to tv154-diag only; exclude it here or setup()/loop()
+# get defined twice at link time.
+build_src_filter =
+  +<*>
+  -<.git/>
+  -<diag_main.cpp>
 EOF_INI
 
 cat > include/config.h <<'EOF_CFG'
