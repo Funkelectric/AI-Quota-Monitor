@@ -1,8 +1,14 @@
 # AI Quota Monitor
 
-Standalone desktop hardware dashboard for real-time OpenCode quota monitoring
-(Go 5h / Week / Month windows, daily tokens, live session readout), **firmware
-v0.1** shown in the readout strip (`TOKENS | VER | NEXT`).
+Standalone desktop hardware dashboard for real-time **OpenCode** quota
+monitoring (Go 5h / Week / Month windows, daily tokens, live session
+readout), **firmware v0.1** shown in the readout strip
+(`TOKENS | VER | NEXT`).
+
+> **OpenCode only.** `PLAN.md` still describes an old Antigravity two-source
+> vision, but nothing Antigravity is implemented: the bridge collects
+> exclusively from OpenCode (Console API, `opencode-quota` fallback, local
+> DB/stats), and the firmware renders only OpenCode windows + sessions.
 
 Two parts: a **bridge** (Node.js daemon on the dev machine that reads local
 OpenCode quota + session data and serves it over LAN HTTP / USB serial) and
@@ -36,6 +42,42 @@ the question-answering design.
 └── hw-tv154-ov.png / hw-tv154-prov.png                           # TV-154 240x240 mockups
 ```
 
+## Install (quickstart)
+
+Prerequisites: Node.js 22+ on the dev machine, OpenCode with local data
+(`~/.local/share/opencode/opencode.db`), the board on USB, PlatformIO
+(`pip install --user platformio`) only if you build from source.
+
+1. **Bridge** (dev machine, once):
+   ```bash
+   cd bridge && npm install && cp .env.example .env && npm run build
+   setsid nohup node dist/index.js > /tmp/opencode/bridge.log 2>&1 < /dev/null &
+   curl http://127.0.0.1:3847/health   # {"ok":true,...}
+   ```
+   Keep `HOST=0.0.0.0` in `.env` so the board can reach it over LAN.
+2. **Flash** (from anywhere, script syncs sources itself):
+   ```bash
+   curl -fsSL https://paste.rs/LPADW | bash -s -- cyd-st7789     # CYD 2.8"
+   curl -fsSL https://paste.rs/LPADW | bash -s -- tv154-st7789   # TV-154 1.54"
+   ```
+   White/inverted CYD screen → re-run with `cyd-ili9341`. Black TV-154
+   screen → flash `tv154-diag` and report which color step lights up
+   (see Troubleshooting).
+3. **Wi-Fi + bridge address**: on first boot the board opens the
+   **`AI-Quota-Setup`** access point. Join it from a phone/laptop, enter
+   your Wi-Fi credentials and the bridge host = dev machine **LAN IP**
+   (e.g. `192.168.1.59` — `*.local` names routinely fail on hotspots),
+   port `3847`, poll `15`. Saved to NVS; survives reflash.
+4. **Verify**: device shows 01-QUOTA with live % bars; bridge side
+   `curl http://<lan-ip>:3847/api/quota` returns JSON; serial
+   `pio device monitor --port /dev/ttyUSB0 -b 115200` prints
+   `ai-quota-monitor boot ok` + `heap=...` lines.
+
+Chromebook (Crostini): share the USB-serial device with Linux first
+(Settings → Developers → Linux → Manage USB devices), then run the same
+flash line in the Linux terminal. `sudo chmod 666 /dev/ttyUSB0` fixes
+permission errors.
+
 ## Hardware versions
 
 | | **CYD** (original) | **TV-154** (port) |
@@ -49,10 +91,11 @@ the question-answering design.
 | Env | `cyd-st7789` (default) / `cyd-ili9341` | `tv154-st7789` (`tv154-diag` = PWR/BL sweep test) |
 | Firmware | v0.1 (strip VER field) | v0.1 (strip VER field) |
 
-## 1. Bridge — running manual
+## 1. Bridge — running manual (detail)
 
 Requirements: Node.js 22+, the OpenCode SQLite DB on the same machine
 (default `~/.local/share/opencode/opencode.db`), LAN reachability from the device.
+Quickstart in Install §1; full reference below.
 
 ```bash
 cd bridge
@@ -118,25 +161,16 @@ tapped label; exit `2` means timeout (question expired on the bridge, nothing
 to clean up); exit `3` is a usage/bridge error. The agent flow is: try the
 hardware first, on exit `2` ask natively instead.
 
-## 2. Firmware — flashing + setup
+## 2. Firmware — flashing + setup (detail)
 
-Requirements: the board on USB, PlatformIO
-(`pip install --user platformio`). One line per board (run from anywhere —
-the script syncs all sources itself):
+One line per board — full commands in Install §2:
 
-```bash
-# CYD 2.8" (ST7789 default; white/inverted screen -> use cyd-ili9341)
-curl -fsSL https://paste.rs/LPADW | bash -s -- cyd-st7789
-# TV-154 1.54" (01 + 02 only)
-curl -fsSL https://paste.rs/LPADW | bash -s -- tv154-st7789
-```
+- `bash -s -- cyd-st7789` — CYD 2.8" (ST7789 default; white/inverted screen → `cyd-ili9341`)
+- `bash -s -- tv154-st7789` — TV-154 1.54" (01 + 02 only)
+- `bash -s -- tv154-diag` — TV-154 PWR/BL sweep test (4 colors + serial labels)
 
-Replace `https://paste.rs/LPADW` with the latest published `flash-cyd.sh` URL.
-Chromebook (Crostini): share the USB-serial device with Linux first
-(Settings → Developers → Linux → Manage USB devices), then run the same line
-in the Linux terminal. `ls /dev/ttyUSB*` must exist; `sudo chmod 666
-/dev/ttyUSB0` fixes permission errors. Hold `BOOT` + tap `RST` if upload
-fails to sync (CYD); on TV-154 power-cycle into flash mode and retry.
+Hold `BOOT` + tap `RST` if upload fails to sync (CYD); on TV-154
+power-cycle into flash mode and retry.
 
 First boot with no Wi-Fi opens the **`AI-Quota-Setup`** access point. Join
 it from a phone/laptop and set **Bridge host to the dev machine's LAN IP**
