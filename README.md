@@ -7,6 +7,10 @@ readout), **firmware v0.1** shown in the readout strip
 
 ## Screenshots
 
+| Real View Both Device | Reak Ask View |
+|---|---|
+| ![Real View Both Device](pic1.jpg) | ![Reak Ask View](pic3.jpg) |
+
 | Quota overview | Provider details |
 |---|---|
 | ![Quota overview](hw-ov.png) | ![Provider details](hw-prov.png) |
@@ -15,9 +19,7 @@ readout), **firmware v0.1** shown in the readout strip
 |---|---|
 | ![Scope view](hw-scope.png) | ![Ask view](hw-ask.png) |
 
-| Real View Both Device | Reak Ask View |
-|---|---|
-| ![Real View Both Device](pic1.jpg) | ![Reak Ask View](pic3.jpg) |
+## Explaination
 
 > **OpenCode only.** `PLAN.md` still describes an old Antigravity two-source
 > vision, but nothing Antigravity is implemented: the bridge collects
