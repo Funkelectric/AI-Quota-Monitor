@@ -5,6 +5,22 @@ monitoring (Go 5h / Week / Month windows, daily tokens, live session
 readout), **firmware v0.1** shown in the readout strip
 (`TOKENS | VER | NEXT`).
 
+## Screenshots
+
+## Screenshots
+
+| Quota overview | Provider details |
+|---|---|
+| ![Quota overview](hw-ov.png) | ![Provider details](hw-prov.png) |
+
+| Scope view | Ask view |
+|---|---|
+| ![Scope view](hw-scope.png) | ![Ask view](hw-ask.png) |
+
+| Real View Both Device | Reak Ask View |
+|---|---|
+| ![Real View Both Device](pic1.jpg) | ![Reak Ask View](pic3.jpg) |
+
 > **OpenCode only.** `PLAN.md` still describes an old Antigravity two-source
 > vision, but nothing Antigravity is implemented: the bridge collects
 > exclusively from OpenCode (Console API, `opencode-quota` fallback, local
