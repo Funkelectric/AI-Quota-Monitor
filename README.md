@@ -7,8 +7,6 @@ readout), **firmware v0.1** shown in the readout strip
 
 ## Screenshots
 
-## Screenshots
-
 | Quota overview | Provider details |
 |---|---|
 | ![Quota overview](hw-ov.png) | ![Provider details](hw-prov.png) |
