@@ -23,6 +23,15 @@ export interface SessionInfo {
   model: string;
 }
 
+/** Latched END OF WORK event (CYD END - WORK screen). Compact (<150B). */
+export interface EndWorkInfo {
+  id: string;
+  title: string;
+  model: string;
+  /** Unix epoch seconds when the work ended */
+  ended_at: number;
+}
+
 export interface OpenCodeBlock {
   connected: boolean;
   today_cost_usd: number;
@@ -40,6 +49,8 @@ export interface QuotaPayload {
   ts: number;
   overall_status: OverallStatus;
   opencode: OpenCodeBlock;
+  /** Present when an END OF WORK event is latched (CYD shows END - WORK). */
+  endofwork?: EndWorkInfo | null;
 }
 
 /** Thresholds */

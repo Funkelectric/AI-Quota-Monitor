@@ -65,12 +65,13 @@
 #define SCR_SCOPE     2
 #define SCR_CLOCK     3
 #define SCR_ASK       4
+#define SCR_ENDWORK   5
 #ifdef TV154
 // TV-154 port scope: 01 QUOTA + 02 WINDOWS only (240x240, single button).
 #define SCR_COUNT     2
 #define HAS_XPT2046   0
 #else
-#define SCR_COUNT     5
+#define SCR_COUNT     6
 #define HAS_XPT2046   1
 #endif
 
@@ -119,6 +120,14 @@
 #define ASK_OPT_LABEL_MAX 24
 #define ASK_ID_MAX 31
 #define ASK_POLL_SEC 5
+
+// END - WORK screen: latched event embedded in the quota payload
+// ("endofwork": {id, title, model, ended_at}). No extra poll needed —
+// quota poll + USB-serial quota frames carry it. Touch dismisses locally
+// and POSTs /api/endofwork/dismiss to clear the bridge slot.
+#define ENDWORK_ID_MAX 31
+#define ENDWORK_TITLE_MAX 23
+#define ENDWORK_MODEL_MAX 31
 
 // WiFi reconnect: non-blocking re-associate attempt every 30s when offline.
 // Fixes C1 (drop latched offline forever). NTP re-synced on regain.

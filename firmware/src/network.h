@@ -27,6 +27,9 @@ bool netFetchAsk(const NetConfig &cfg, struct AskState &out);
 /** POST http://host:port/api/ask/answer {id, option_id}. True on 200. */
 bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id);
 
+/** POST http://host:port/api/endofwork/dismiss {id}. True on 200. */
+bool netPostEndDismiss(const NetConfig &cfg, const char *id);
+
 /**
  * Non-blocking WiFi maintenance (AUDIT C1 / P0-1).
  * Call every loop(): when offline, attempts WiFi.reconnect() at most every

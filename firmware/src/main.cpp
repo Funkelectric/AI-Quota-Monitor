@@ -33,6 +33,19 @@ static bool g_hasAnswer = false;
 static char g_answerId[ASK_ID_MAX + 1];
 static char g_answerOpt[ASK_ID_MAX + 1];
 
+// END - WORK latch: hero blink phase + dismissed id (touch clears locally,
+// deferred POST clears the bridge slot). Stays until ANY screen touch.
+static bool g_endBlink = false;
+static char g_endDismissed[ENDWORK_ID_MAX + 1] = "";
+static bool g_hasEndDismiss = false;
+static char g_endDismissId[ENDWORK_ID_MAX + 1] = "";
+
+// True when a live (not yet dismissed) END OF WORK event is held.
+static bool endWorkActive() {
+  return g_state.has_endwork && g_state.endwork_id[0] &&
+         strcmp(g_state.endwork_id, g_endDismissed) != 0;
+}
+
 // BOOT button (GPIO0, active LOW).
 static bool s_btnDown = false;
 static unsigned long s_btnMs = 0;
@@ -54,6 +67,7 @@ static void render() {
     case SCR_SCOPE: drawScope(g_state, netUp, g_serialMode); break;
     case SCR_CLOCK: drawClock(g_state, netUp, g_serialMode); break;
     case SCR_ASK: drawAsk(g_ask, g_state, netUp, g_serialMode); break;
+    case SCR_ENDWORK: drawEndWork(g_state, netUp, g_serialMode, g_endBlink); break;
     default: drawOverview(g_state, netUp, g_serialMode); break;
   }
   g_lastRender = millis();
@@ -75,14 +89,17 @@ static void skipAskIfEmpty(uint8_t &scr) {
   if (scr >= SCR_COUNT) scr = SCR_OVERVIEW;
 #else
   if (scr == SCR_ASK && !g_ask.pending) scr = SCR_OVERVIEW;
+  if (scr == SCR_ENDWORK && !endWorkActive()) scr = SCR_OVERVIEW;
 #endif
 }
 
 static void nextScreen() {
   // AUDIT H8: never land on ASK with nothing pending (both directions).
+  // Same for ENDWORK: only land via latch, never via cycling.
   for (uint8_t i = 0; i < SCR_COUNT; i++) {
     g_screen = (g_screen + 1) % SCR_COUNT;
     if (g_screen == SCR_ASK && !g_ask.pending) continue;
+    if (g_screen == SCR_ENDWORK && !endWorkActive()) continue;
     break;
   }
   render();
@@ -92,6 +109,7 @@ static void prevScreen() {
   for (uint8_t i = 0; i < SCR_COUNT; i++) {
     g_screen = (g_screen + SCR_COUNT - 1) % SCR_COUNT;
     if (g_screen == SCR_ASK && !g_ask.pending) continue;
+    if (g_screen == SCR_ENDWORK && !endWorkActive()) continue;
     break;
   }
   render();
@@ -104,6 +122,14 @@ static void pollNow() {
   if (netFetchQuota(g_cfg, next)) {
     g_state = next;
     g_serialMode = false;
+    // END - WORK latch: new (not dismissed) event pops the screen and each
+    // poll toggles the hero blink so the change is clearly visible.
+    if (endWorkActive()) {
+      g_endBlink = !g_endBlink;
+      if (g_screen != SCR_ENDWORK) g_screen = SCR_ENDWORK;
+    } else if (g_screen == SCR_ENDWORK) {
+      g_screen = SCR_OVERVIEW;
+    }
     render();
   }
   g_lastPoll = millis();
@@ -159,6 +185,12 @@ static void handleSerialLine() {
   if (parseQuotaPayload(s_line, s_lineLen, next)) {
     g_state = next;
     g_serialMode = true;
+    if (endWorkActive()) {
+      g_endBlink = !g_endBlink;
+      if (g_screen != SCR_ENDWORK) g_screen = SCR_ENDWORK;
+    } else if (g_screen == SCR_ENDWORK) {
+      g_screen = SCR_OVERVIEW;
+    }
     render();
   }
 }
@@ -238,8 +270,9 @@ static void buttonTick() {
     }
   } else if (!down && s_btnDown) {
     // AUDIT H4: ~50ms debounce guard; contact bounce skips screens.
+    // ENDWORK latches until SCREEN touch - BOOT taps never exit it.
     if (!s_longFired && (now - s_btnMs > 50) && (now - s_lastReleaseMs > 50)) {
-      nextScreen();
+      if (g_screen != SCR_ENDWORK) nextScreen();
       s_lastReleaseMs = now;
     }
     s_btnDown = false;
@@ -293,7 +326,10 @@ static void pollAskNow() {
   // TV-154 01+02 port: keep quota state fresh, never leave 01/02 for ASK.
   skipAskIfEmpty(g_screen);
 #else
-  if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
+  // ENDWORK latches until touch: never auto-popup ASK over it.
+  if (g_screen == SCR_ENDWORK && endWorkActive()) {
+    skipAskIfEmpty(g_screen);
+  } else if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
     g_screen = SCR_ASK;  // auto-popup on new question
     render();
   } else if (!next.pending && wasPending && g_screen == SCR_ASK) {
@@ -357,7 +393,18 @@ void loop() {
 
   uint16_t tx, ty;
   if (touchTap(tx, ty)) {
-    if (g_screen == SCR_ASK && g_ask.pending) {
+    if (g_screen == SCR_ENDWORK) {
+      // Latched until touch: any tap dismisses locally + clears bridge.
+      if (g_state.has_endwork && g_state.endwork_id[0]) {
+        strncpy(g_endDismissed, g_state.endwork_id, sizeof(g_endDismissed) - 1);
+        g_endDismissed[sizeof(g_endDismissed) - 1] = '\0';
+        strncpy(g_endDismissId, g_state.endwork_id, sizeof(g_endDismissId) - 1);
+        g_endDismissId[sizeof(g_endDismissId) - 1] = '\0';
+        g_hasEndDismiss = true;
+      }
+      g_screen = SCR_OVERVIEW;
+      render();
+    } else if (g_screen == SCR_ASK && g_ask.pending) {
       if (ty < HEADER_H) {
         g_forceAsk = true;  // top bar tap: force refresh (deferred, not blocking)
       } else {
@@ -403,6 +450,22 @@ void loop() {
     render();
   }
 
+  // Deferred ENDWORK dismiss: clear the bridge slot so the next poll (or
+  // another CYD) does not re-latch. Local screen already dismissed.
+  if (g_hasEndDismiss && netIsConnected() && !g_serialMode) {
+    g_hasEndDismiss = false;
+    syncBadge("SEND");
+    if (netPostEndDismiss(g_cfg, g_endDismissId)) {
+      render();
+    } else {
+      render();
+    }
+  } else if (g_hasEndDismiss && g_serialMode) {
+    // Serial mode is push-only: drop the queue, local dismiss stands.
+    g_hasEndDismiss = false;
+    render();
+  }
+
   unsigned long now = millis();
   unsigned long interval = (unsigned long)g_cfg.poll_sec * 1000UL;
   // AUDIT C5: stagger quota/ask — never both blocking back-to-back in one
@@ -430,7 +493,11 @@ void loop() {
   // data/screen change to cut fillScreen flicker. Keep 10s for clock, 30s
   // otherwise (countdowns are minute-granularity except sub-2min seconds).
   unsigned long tickMs = (g_screen == SCR_CLOCK) ? 10000UL : 30000UL;
-  if (now - g_lastRender > tickMs) render();
+  if (g_screen == SCR_ENDWORK) tickMs = 5000UL;
+  if (now - g_lastRender > tickMs) {
+    if (g_screen == SCR_ENDWORK && endWorkActive()) g_endBlink = !g_endBlink;
+    render();
+  }
 
   if (now - g_lastBl > 500) {
     g_lastBl = now;

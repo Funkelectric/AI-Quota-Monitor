@@ -3,6 +3,7 @@ import "dotenv/config";
 import { Bonjour } from "bonjour-service";
 import { collectOpenCode, getCachedBlock, isCacheFresh, refreshInBackground } from "./collectors/opencode.js";
 import { getPending } from "./askStore.js";
+import { getPending as getEndWork } from "./endWorkStore.js";
 import { mockAskPayload, mockQuotaPayload } from "./mock.js";
 import { startHttpServer } from "./transports/http.js";
 import { startSerialPusher } from "./transports/serial.js";
@@ -22,10 +23,12 @@ const SERIAL_INTERVAL_SEC = Number(process.env.SERIAL_INTERVAL_SEC ?? "10");
 
 function payloadFrom(opencode: OpenCodeBlock | null): QuotaPayload | null {
   if (!opencode) return null;
+  const ew = getEndWork();
   const payload: QuotaPayload = {
     ts: Math.floor(Date.now() / 1000),
     overall_status: "ok",
     opencode,
+    endofwork: ew ? { id: ew.id, title: ew.title, model: ew.model, ended_at: ew.ended_at } : null,
   };
   payload.overall_status = overallStatusFor(payload);
   return payload;
@@ -40,10 +43,12 @@ async function livePayload(): Promise<QuotaPayload> {
     if (fast) return fast;
   }
   const opencode = await collectOpenCode();
+  const ew = getEndWork();
   const payload: QuotaPayload = {
     ts: Math.floor(Date.now() / 1000),
     overall_status: "ok",
     opencode,
+    endofwork: ew ? { id: ew.id, title: ew.title, model: ew.model, ended_at: ew.ended_at } : null,
   };
   payload.overall_status = overallStatusFor(payload);
   return payload;
