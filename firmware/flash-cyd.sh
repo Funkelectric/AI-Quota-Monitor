@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # NM-CYD Quota Monitor: build + flash (repo-canonical, non-clobbering).
-# Usage: flash-cyd.sh [cyd-st7789|cyd-ili9341|tv154-st7789] [--bootstrap]  (default: cyd-st7789)
+# Usage: flash-cyd.sh [cyd-st7789|cyd-ili9341|tv154-st7789|tv154-diag] [--bootstrap]  (default: cyd-st7789)
 # White/inverted screen after flashing => re-run with cyd-ili9341.
 #
 # AUDIT M11: repo files under firmware/ are canonical. By default this script
@@ -17,7 +17,7 @@ CHECK=0
 ENV="cyd-st7789"
 for a in "$@"; do
   case "$a" in
-    cyd-st7789|cyd-ili9341|tv154-st7789) ENV="$a" ;;
+    cyd-st7789|cyd-ili9341|tv154-st7789|tv154-diag) ENV="$a" ;;
     --bootstrap) BOOTSTRAP=1 ;;
     --check) CHECK=1 ;;
   esac
@@ -2273,6 +2273,9 @@ void loop() {
   delay(20);
 }
 EOF_MAIN
+
+cat > src/diag_main.cpp <<'EOF_DIAG'
+EOF_DIAG
 
 fi # end legacy --bootstrap file sync (repo-canonical default skips all cat > above)
 
