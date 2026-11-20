@@ -1,6 +1,7 @@
 /** Native Node HTTP transport: GET /api/quota, GET /api/ask, POST /api/ask*, GET /health */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { answerAsk, getById, getPending, hasPending, postAsk } from "../askStore.js";
+import { dismissEndWork, getById as getEndById, getPending as getEndPending, hasPending as hasEndPending, postEndWork } from "../endWorkStore.js";
 import type { QuotaPayload } from "../types.js";
 
 export interface HttpOptions {
@@ -83,7 +84,7 @@ export function startHttpServer(opts: HttpOptions): Server {
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
-      const body = JSON.stringify({ ok: true, ts: Math.floor(Date.now() / 1000), ask_pending: hasPending() });
+      const body = JSON.stringify({ ok: true, ts: Math.floor(Date.now() / 1000), ask_pending: hasPending(), endwork_pending: hasEndPending() });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
       return;
@@ -156,6 +157,69 @@ export function startHttpServer(opts: HttpOptions): Server {
           return;
         }
         send(res, 200, { ok: true, id: done.id, answer: done.answer });
+      } catch {
+        send(res, 400, { error: "bad_json" });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/endofwork") {
+      const qid = url.searchParams.get("id");
+      if (qid) {
+        const found = getEndById(qid);
+        if (!found) {
+          res.writeHead(410);
+          res.end(JSON.stringify({ error: "gone" }));
+          return;
+        }
+        send(res, 200, found);
+        return;
+      }
+      const p = getEndPending();
+      if (!p) {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      send(res, 200, p);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/endofwork") {
+      if (!checkAuth(req)) {
+        send(res, 401, { error: "unauthorized" });
+        return;
+      }
+      try {
+        const input = (await readJson(req)) as {
+          title?: string;
+          model?: string;
+          session?: string;
+        };
+        if (!input || typeof input.title !== "string") {
+          send(res, 400, { error: "bad_request", detail: "need {title: string}" });
+          return;
+        }
+        send(res, 200, postEndWork(input));
+      } catch {
+        send(res, 400, { error: "bad_json" });
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/endofwork/dismiss") {
+      if (!checkAuth(req)) {
+        send(res, 401, { error: "unauthorized" });
+        return;
+      }
+      try {
+        const input = (await readJson(req)) as { id?: string };
+        const done = input?.id ? dismissEndWork(String(input.id)) : null;
+        if (!done) {
+          send(res, 410, { error: "no_such_event" });
+          return;
+        }
+        send(res, 200, { ok: true, id: done.id });
       } catch {
         send(res, 400, { error: "bad_json" });
       }

@@ -232,3 +232,24 @@ bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) 
   http.end();
   return code == 200;
 }
+
+bool netPostEndDismiss(const NetConfig &cfg, const char *id) {
+  if (WiFi.status() != WL_CONNECTED || !id) return false;
+  char url[128];
+  snprintf(url, sizeof(url), "http://%s:%u/api/endofwork/dismiss", cfg.host, cfg.port);
+
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(url)) return false;
+  http.addHeader("Content-Type", "application/json");
+  if (s_token[0]) {
+    char auth[80];
+    snprintf(auth, sizeof(auth), "Bearer %.64s", s_token);
+    http.addHeader("Authorization", auth);
+  }
+  char body[64];
+  snprintf(body, sizeof(body), "{\"id\":\"%.31s\"}", id);
+  int code = http.POST((uint8_t *)body, strlen(body));
+  http.end();
+  return code == 200;
+}

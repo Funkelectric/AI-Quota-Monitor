@@ -24,12 +24,14 @@ static const char *screenSection(uint8_t scr) {
     // 240px: "02 - PROVIDERS" (130px spaced) collides with the clock cluster;
     // "02 - WINDOWS" (114px) keeps an 8px gap (see mock_tv154_render.py audit).
     case SCR_PROVIDERS: return "02 - WINDOWS";
+    case SCR_ENDWORK: return "END - WORK";
 #else
     case SCR_PROVIDERS: return "02 - PROVIDERS";
-#endif
     case SCR_SCOPE: return "03 - SCOPE";
     case SCR_CLOCK: return "04 - STANDBY";
     case SCR_ASK: return "05 - ASK";
+    case SCR_ENDWORK: return "END - WORK";
+#endif
     default: return "01 - QUOTA";
   }
 }
@@ -674,4 +676,78 @@ void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode
     }
   }
   tiny("TAP TO ANSWER - BOOT = NEXT", 86, 226, COLOR_DIM, COLOR_BG);
+}
+
+// ---- END - WORK: latched ended-work notice (CYD 320x240) ----
+// Geometry mirrors mock_endofwork_render.py:
+//   header 0..28, tiny label y=38, title y=50, sub y=68, hairline y=88,
+//   hero "END OF" y=96 / "WORK" y=146 (font6), button (8,196,304,32).
+// Hero blinks TEXT white <-> ICE blue on each poll (blinkBlue). Any tap
+// dismisses (handled in main.cpp); this screen never auto-exits.
+void drawEndWork(const QuotaState &q, bool netUp, bool serialMode, bool blinkBlue) {
+  TFT_eSPI &t = display();
+  t.fillScreen(COLOR_BG);
+  t.setTextSize(1);
+  t.setTextDatum(TL_DATUM);
+  header(q, netUp, serialMode);
+
+  t.setTextFont(1);
+  tiny("ENDED WORK", (LAYOUT_W - (int)t.textWidth("ENDED WORK")) / 2, 38, COLOR_DIM, COLOR_BG);
+
+  char title[ENDWORK_TITLE_MAX + 1];
+  strncpy(title, q.has_endwork && q.endwork_title[0] ? q.endwork_title : "--", sizeof(title) - 1);
+  title[sizeof(title) - 1] = '\0';
+  t.setTextFont(2);
+  while (strlen(title) > 1 && t.textWidth(title) > LAYOUT_W - 28) title[strlen(title) - 1] = '\0';
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
+  t.setCursor((LAYOUT_W - t.textWidth(title)) / 2, 50);
+  t.print(title);
+
+  char sub[ENDWORK_MODEL_MAX + 1];
+  strncpy(sub, q.has_endwork ? q.endwork_model : "", sizeof(sub) - 1);
+  sub[sizeof(sub) - 1] = '\0';
+  t.setTextFont(2);
+  while (strlen(sub) > 1 && t.textWidth(sub) > LAYOUT_W - 28) sub[strlen(sub) - 1] = '\0';
+  t.setTextColor(COLOR_DIM, COLOR_BG);
+  if (sub[0]) {
+    t.setCursor((LAYOUT_W - t.textWidth(sub)) / 2, 68);
+    t.print(sub);
+  }
+
+  t.drawFastHLine(13, 88, LAYOUT_W - 26, COLOR_EDGE);
+
+  // Hero: single "END OF WORK" line, vertically centered in the 88..196
+  // zone (center y=142). Font 6 draws digits but not letters on ILI9341
+  // panel builds, so font 2 is used: size 3 when it fits, else size 2.
+  // print() with manual centering, the most proven path on-device.
+  // Budget + button derive from LAYOUT_W so CYD (320) and TV154 (240)
+  // share this function.
+  const int budget = LAYOUT_W - 28;
+  uint16_t hero = blinkBlue ? COLOR_ICE : COLOR_TEXT;
+  t.setTextFont(2);
+  t.setTextSize(3);
+  t.setTextColor(hero, COLOR_BG);
+  int hw = t.textWidth("END OF WORK");
+  uint8_t hs = 3;
+  if (hw > budget) { hs = 2; t.setTextSize(2); hw = t.textWidth("END OF WORK"); }
+  t.setCursor((LAYOUT_W - hw) / 2, 142 - 8 * hs);
+  t.print("END OF WORK");
+  t.setTextSize(1);
+
+  // Dismiss hint: full-width bar. CYD: any screen tap dismisses; TV154 (no
+  // XY touch): the top key dismisses (see buttonTick). Outline pulses with
+  // the hero (same phase).
+  uint16_t frame = blinkBlue ? COLOR_ICE : COLOR_EDGE;
+  const int bw = LAYOUT_W - 16;
+  t.drawRoundRect(8, 196, bw, 32, 3, frame);
+  t.fillRoundRect(9, 197, bw - 2, 30, 2, COLOR_CARD);
+#ifdef TV154
+  const char *hint = "TOUCH TOP TO DISMISS";
+#else
+  const char *hint = "TOUCH SCREEN TO DISMISS";
+#endif
+  t.setTextFont(2);
+  t.setTextColor(COLOR_DIM, COLOR_CARD);
+  t.setCursor((LAYOUT_W - t.textWidth(hint)) / 2, 196 + (32 - 16) / 2);
+  t.print(hint);
 }

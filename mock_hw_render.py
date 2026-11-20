@@ -92,7 +92,7 @@ def draw_f2(d, xy, s, fill, track=0):
 
 DATA = [("GO 5H", 99.7, 4 * 3600 + 31 * 60), ("GO WEEK", 92.4, 3 * 86400 + 14 * 3600),
         ("GO MONTH", 87.7, 14 * 86400 + 9 * 3600)]
-TOK, VER, COST = "14.9k", "v0.1", "$0.00"
+TOK, VER, COST = "14.9k", "v0.2", "$0.00"
 SESS = [("ESP32 display choice bu", "Muse Spark 1.3 Contributor"),
         ("Pure-black redesign", "Muse Spark 1.3 Contributor"),
         ("CYD ask-screen mockup", "Muse Spark 1.3 Contributor")]
