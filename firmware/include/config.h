@@ -75,7 +75,7 @@
 #endif
 
 // Network / bridge defaults
-#define WIFI_AP_NAME "NM-Quota-Setup"
+#define WIFI_AP_NAME "AI-Quota-Setup"
 #define BRIDGE_HOST_DEFAULT "quota-bridge.local"
 #define BRIDGE_PORT_DEFAULT 3847
 #define POLL_INTERVAL_SEC_DEFAULT 15
@@ -95,6 +95,9 @@
 
 // Long-press duration that wipes WiFi creds + opens the portal.
 #define BUTTON_LONG_MS 5000
+
+// Firmware version shown in the readout strip (VER field), both hardware.
+#define FW_VERSION "v0.1"
 
 // Compact payload guard: ESP32 parses this on the stack.
 #define QUOTA_JSON_MAX 2048

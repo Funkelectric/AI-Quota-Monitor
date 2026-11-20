@@ -1,13 +1,12 @@
-# NM-CYD OpenCode Quota Monitor
+# AI Quota Monitor
 
-Standalone desktop hardware dashboard on an NMMiner NM-CYD
-(`ESP32-2432S028R`, 2.8" 320×240) for real-time OpenCode quota monitoring
-(Go 5h / Week / Month windows, daily tokens + cost), live session readout,
-and **touch-to-answer question prompts**.
+Standalone desktop hardware dashboard for real-time OpenCode quota monitoring
+(Go 5h / Week / Month windows, daily tokens, live session readout), **firmware
+v0.1** shown in the readout strip (`TOKENS | VER | NEXT`).
 
 Two parts: a **bridge** (Node.js daemon on the dev machine that reads local
 OpenCode quota + session data and serves it over LAN HTTP / USB serial) and
-the **firmware** (PlatformIO dashboard on the CYD).
+the **firmware** (PlatformIO dashboard). One bridge serves both hardware.
 
 See `PLAN.md` for the original implementation plan and `PLAN-CYD-ASK.md` for
 the question-answering design.
@@ -16,29 +15,44 @@ the question-answering design.
 .
 ├── README.md
 ├── PLAN.md / PLAN-CYD-ASK.md
-├── bridge/      # Node.js collector + LAN HTTP/Serial server
+├── bridge/      # Node.js collector + LAN HTTP/Serial server (shared, both boards)
 │   └── src/
 │       ├── index.ts            # entry: HTTP + mDNS + optional serial
 │       ├── types.ts            # QuotaPayload + SessionInfo + Ask contracts
 │       ├── askStore.ts         # single-slot question queue w/ 30s fallback
-│       ├── ask-cyd.sh          # ask via CYD, fall back to app on timeout
+│       ├── ask-cyd.sh          # ask via device, fall back to app on timeout
 │       ├── mock.ts             # mock data generator (--mock)
 │       ├── collectors/opencode.ts  # Console API + stats CLI + DB fallback + sessions
 │       └── transports/{http,serial}.ts
-├── firmware/    # PlatformIO ESP32 project (both panel revisions)
-│   ├── platformio.ini          # cyd-st7789 (default) + cyd-ili9341
-│   ├── flash-cyd.sh            # full sync + build + flash script
-│   ├── include/                # config.h (pins, screens, ASK constants)
+├── firmware/    # PlatformIO ESP32 project (both boards below)
+│   ├── platformio.ini          # cyd-st7789 / cyd-ili9341 / tv154-st7789 / tv154-diag
+│   ├── flash-cyd.sh            # full sync + build + flash script (all envs)
+│   ├── include/                # config.h (pins, screens, FW_VERSION) + ui_theme.h
 │   └── src/                    # network, quota_state, ask_state, led, ui/* screens
-├── mock_hw_render.py  # pixel-honest firmware emulator (PIL, real TFT glyphs)
-├── hw-ov.png / hw-prov.png / hw-scope.png / hw-ask.png  # rendered screen mockups
-└── hw-ov2 / prov2 / scope2 / clock2.png                 # pure-black redesign proposals
+├── mock_hw_render.py   # pixel-honest CYD emulator (PIL, real TFT glyphs)
+├── mock_tv154_render.py  # pixel-honest TV-154 emulator (imports CYD glyph path)
+├── hw-ov.png / hw-prov.png / hw-scope.png / hw-ask.png            # CYD mockups
+├── hw-ov2 / prov2 / scope2 / clock2.png                           # CYD pure-black proposals
+└── hw-tv154-ov.png / hw-tv154-prov.png                           # TV-154 240x240 mockups
 ```
+
+## Hardware versions
+
+| | **CYD** (original) | **TV-154** (port) |
+|---|---|---|
+| Board | `ESP32-2432S028R` (NMMiner NM-CYD) | NM-TV-154 (ESP32-D0) |
+| Display | 2.8" 320×240 landscape (ST7789 / ILI9341) | 1.54" 240×240 square (ST7789, HSPI, `CGRAM_OFFSET`) |
+| Input | XPT2046 resistive touch + BOOT button | 1 capacitive top key (T9/GPIO32): tap = next screen, hold 5 s = wipe Wi-Fi + portal |
+| LED / sensor | RGB LED + LDR auto-backlight | none (fixed full backlight) |
+| Backlight / power | BL `GPIO21` | BL `GPIO19` active-low, LCD power rail `GPIO21` active-low (must be enabled or the screen stays black) |
+| Screens | 01 QUOTA · 02 WINDOWS · 03 SCOPE · 04 STANDBY · 05 ASK | **01 QUOTA · 02 WINDOWS only** (same bridge, same data) |
+| Env | `cyd-st7789` (default) / `cyd-ili9341` | `tv154-st7789` (`tv154-diag` = PWR/BL sweep test) |
+| Firmware | v0.1 (strip VER field) | v0.1 (strip VER field) |
 
 ## 1. Bridge — running manual
 
 Requirements: Node.js 22+, the OpenCode SQLite DB on the same machine
-(default `~/.local/share/opencode/opencode.db`), LAN reachability from the CYD.
+(default `~/.local/share/opencode/opencode.db`), LAN reachability from the device.
 
 ```bash
 cd bridge
@@ -68,7 +82,7 @@ Endpoints:
 - `GET /health` → `{ ok, ts, ask_pending }`.
 - `GET /api/ask` → pending question or `204` when none. `?id=` returns that question's state, including the answer once resolved.
 - `POST /api/ask { question, options[], session?, detail?, timeout_sec? }` → creates a pending question (replaces any previous one). Options are strings or `{ id, label }` (max 4, labels ≤ 24 chars, question ≤ 120 chars).
-- `POST /api/ask/answer { id, option_id }` → records the CYD tap. `410` when the question is gone.
+- `POST /api/ask/answer { id, option_id }` → records the tap. `410` when the question is gone.
 
 Data sources (in order, each isolated so one failure never crashes the bridge):
 1. OpenCode Console `/api/go/status` with the OAuth login from the local DB (5h/weekly/monthly meters).
@@ -86,10 +100,10 @@ curl http://<lan-ip>:3847/health
 
 Reference deployment: this machine, LAN IP `192.168.1.59`, port `3847`.
 
-### Asking via the CYD (05 · ASK)
+### Asking via the device (CYD 05 · ASK only)
 
 `bridge/ask-cyd.sh` posts a question, waits for the hardware answer, and falls
-back to the app when the CYD stays silent:
+back to the app when the device stays silent (TV-154 has no ASK screen):
 
 ```bash
 if ans=$(./bridge/ask-cyd.sh "Which model for refactor?" "Quick patch" "Full rewrite" "Skip"); then
@@ -106,88 +120,84 @@ hardware first, on exit `2` ask natively instead.
 
 ## 2. Firmware — flashing + setup
 
-Requirements: the CYD on USB (`lsusb` → `1a86:7523`, `/dev/ttyUSB0`),
-PlatformIO (`pip install --user platformio`), hold `BOOT` + tap `RST` if
-upload fails to sync.
-
-One line (syncs all sources, builds, flashes `cyd-st7789`):
+Requirements: the board on USB, PlatformIO
+(`pip install --user platformio`). One line per board (run from anywhere —
+the script syncs all sources itself):
 
 ```bash
-curl -fsSL https://paste.rs/GTqNE | bash
-# other panel revision (white/inverted screen):  curl -fsSL https://paste.rs/GTqNE | bash -s -- cyd-ili9341
+# CYD 2.8" (ST7789 default; white/inverted screen -> use cyd-ili9341)
+curl -fsSL https://paste.rs/LPADW | bash -s -- cyd-st7789
+# TV-154 1.54" (01 + 02 only)
+curl -fsSL https://paste.rs/LPADW | bash -s -- tv154-st7789
 ```
 
-Panel note (this unit, 2026-11-19): the `cyd-ili9341` env is baked with the
-alternative init (`ILI9341_2_DRIVER`) + `TFT_INVERSION_ON`, which fixes the
-column offset and restores black background + blue palette. Stock
-`ILI9341_DRIVER` shows rotated + noise here; `ST7789` builds show inverted
-colors. If your panel differs, the two stock envs are still in
-`firmware/platformio.ini` — pick whichever renders correctly.
-
-Chromebook (Crostini): share the `1a86:7523` USB device with Linux first
+Replace `https://paste.rs/LPADW` with the latest published `flash-cyd.sh` URL.
+Chromebook (Crostini): share the USB-serial device with Linux first
 (Settings → Developers → Linux → Manage USB devices), then run the same line
 in the Linux terminal. `ls /dev/ttyUSB*` must exist; `sudo chmod 666
-/dev/ttyUSB0` fixes permission errors.
+/dev/ttyUSB0` fixes permission errors. Hold `BOOT` + tap `RST` if upload
+fails to sync (CYD); on TV-154 power-cycle into flash mode and retry.
 
-First boot with no Wi-Fi opens the **`NM-Quota-Setup`** access point. Join
+First boot with no Wi-Fi opens the **`AI-Quota-Setup`** access point. Join
 it from a phone/laptop and set **Bridge host to the dev machine's LAN IP**
 (e.g. `192.168.1.59` — mDNS `*.local` routinely fails on hotspots), port
 `3847`, poll interval `15`. Credentials persist in NVS.
 
-Screens (tap left/right halves to cycle, top bar = force refresh,
-BOOT short-press = next screen, BOOT > 5 s = wipe Wi-Fi + reopen portal):
+Screens (CYD: tap left/right halves to cycle, top bar = force refresh,
+BOOT short-press = next screen, BOOT > 5 s = wipe Wi-Fi + reopen portal;
+TV-154: tap top key = next screen (01↔02), hold 5 s = wipe + portal):
 
 1. **01 · QUOTA** — hero quota curve, per-window labels, SESSION strip
    (conversation title + pretty model, `x/y` pager rotating every 10 s,
-   pager hidden when only one session is active), TOKENS / COST / NEXT strip.
+   pager hidden when only one session is active), TOKENS / VER / NEXT strip
+   (VER = firmware version, currently `v0.1`).
 2. **02 · WINDOWS** — per-window rows with centered big `%` and
    right-aligned readable reset countdowns + thick bars.
-3. **03 · SCOPE** — big min-level ring gauge + per-window readouts.
-4. **04 · STANDBY** — desk clock + level bars.
-5. **05 · ASK** — pops up automatically when `GET /api/ask` reports a
+3. **03 · SCOPE** (CYD only) — big min-level ring gauge + per-window readouts.
+4. **04 · STANDBY** (CYD only) — desk clock + level bars.
+5. **05 · ASK** (CYD only) — pops up automatically when `GET /api/ask` reports a
    pending question (polled every 5 s). Question + option preview on top,
    large answer buttons at the bottom (2/3/4-option layouts). A tap posts
    `/api/ask/answer` and returns to QUOTA; expiry clears back automatically.
 
-LED: green ok / amber warn / breathing-red crit / dim-blue pulse offline.
-Backlight follows the LDR (EMA + deadband, full swing <5s) with a readable floor.
+LED (CYD only): green ok / amber warn / breathing-red crit / dim-blue pulse
+offline. Backlight follows the LDR (EMA + deadband, full swing <5s) with a readable floor.
+TV-154: fixed full backlight, no LED.
 
 Security: LAN-open by design (no auth on GETs, CORS `*`), same as the quota
 path. For shared networks set `CYD_TOKEN` in the bridge `.env` — the bridge
 then requires `Authorization: Bearer <token>` on `POST /api/ask` and
-`POST /api/ask/answer`. The CYD sends the token when `CYD_TOKEN` is baked at
+`POST /api/ask/answer`. The firmware sends the token when `CYD_TOKEN` is baked at
 build time. USB Serial mode is push-only (quota+ask frames, no answer uplink).
 
-Troubleshooting: white/inverted screen → try the other env (see panel note);
-`Couldn't sync` → BOOT-hold sequence; `UnknownPackage … XPT2046` → the
-installer pins the GitHub URL, don't use the registry name; the
-`TOUCH_CS` warning from TFT_eSPI is expected (touch runs on the dedicated
-`XPT2046_Touchscreen` lib, not TFT_eSPI, and `TOUCH_CS=-1` is now explicit).
+Troubleshooting: white/inverted screen (CYD) → try the other env (see panel note);
+black screen (TV-154) → LCD power rail `GPIO21` must be driven LOW (done in
+`displayInit`), backlight `GPIO19` LOW = on; run `tv154-diag` env (PWR/BL
+sweep, 4 colors) to find your unit's polarity;
+`Couldn't sync` → BOOT-hold sequence (CYD) / power-cycle (TV-154);
+marginal USB cable + full-bright backlight + Wi-Fi TX peaks = classic
+brownout/reboot loop — use a short cable or powered hub (CYD AUDIT M12).
 Flashing wipes NMMiner; restore
-anytime via `https://flash.nmminer.com`.
+anytime via `https://flash.nmminer.com` (TV-154: device `nm-tv-154`).
+
+Partitions: `huge_app.csv` = NO OTA. Every future update needs USB. This is
+intentional for single-app desk use; switching to an OTA layout costs flash
+and needs re-partitioning (CYD AUDIT H6).
 
 ## 3. Mockups (hardware-honest)
 
-`mock_hw_render.py` emulates the framebuffer: exact RGB565 palette, decoded
-real TFT_eSPI font-2 glyphs, same curve/truncation algorithms as the
-firmware, 1× canvas nearest-upscaled ×3:
+`mock_hw_render.py` (CYD) / `mock_tv154_render.py` (TV-154) emulate the
+framebuffer: exact RGB565 palette, decoded real TFT_eSPI font-2 glyphs, same
+curve/truncation algorithms as the firmware, 1× canvas nearest-upscaled ×3:
 
 ```bash
-python3 mock_hw_render.py   # writes hw-ov/prov/scope/ask.png (+ v2 proposals)
+python3 mock_hw_render.py       # writes hw-ov/prov/scope/ask.png (+ v2 proposals)
+python3 mock_tv154_render.py   # writes hw-tv154-ov/prov.png (240x240)
 python3 -m http.server 8080  # view from another machine on the LAN
 ```
 
 Rules: the emulator mirrors the firmware (fix firmware first, then the
 emulator), never the other way around.
-
-Power: the CYD has no brownout handling — full-bright backlight at boot +
-Wi-Fi TX peaks on a marginal USB cable is the classic brownout/reboot loop.
-Use a short cable or a powered hub; if it reboots when the backlight ramps
-or Wi-Fi associates, suspect power first (AUDIT M12).
-
-Partitions: `huge_app.csv` = NO OTA. Every future update needs USB. This is
-intentional for single-app desk use; switching to an OTA layout costs flash
-and needs re-partitioning (AUDIT H6).
 
 ## 4. Helpers
 

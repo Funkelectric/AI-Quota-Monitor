@@ -101,6 +101,12 @@ lib_deps =
   bblanchon/ArduinoJson@^7.0.4
   tzapu/WiFiManager@^2.0.17
   https://github.com/PaulStoffregen/XPT2046_Touchscreen.git
+# diag_main.cpp belongs to tv154-diag only; exclude it here or setup()/loop()
+# get defined twice at link time.
+build_src_filter =
+  +<*>
+  -<.git/>
+  -<diag_main.cpp>
 
 [env:tv154-diag]
 # Sweep diagnostic: tries all LCD-PWR(21) x BL(19) combos, reports via serial.
@@ -303,7 +309,7 @@ cat > include/config.h <<'EOF_CFG'
 #endif
 
 // Network / bridge defaults
-#define WIFI_AP_NAME "NM-Quota-Setup"
+#define WIFI_AP_NAME "AI-Quota-Setup"
 #define BRIDGE_HOST_DEFAULT "quota-bridge.local"
 #define BRIDGE_PORT_DEFAULT 3847
 #define POLL_INTERVAL_SEC_DEFAULT 15
@@ -323,6 +329,9 @@ cat > include/config.h <<'EOF_CFG'
 
 // Long-press duration that wipes WiFi creds + opens the portal.
 #define BUTTON_LONG_MS 5000
+
+// Firmware version shown in the readout strip (VER field), both hardware.
+#define FW_VERSION "v0.1"
 
 // Compact payload guard: ESP32 parses this on the stack.
 #define QUOTA_JSON_MAX 2048
@@ -428,7 +437,7 @@ void configSave(const NetConfig &cfg);
 
 /**
  * Bring up WiFi. Returns true when connected.
- * Opens the NM-Quota-Setup captive portal when no credentials are stored
+ * Opens the AI-Quota-Setup captive portal when no credentials are stored
  * (portalTimeoutMs) or when forcePortal is true (BOOT long-press path).
  */
 bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeoutMs = 180000);
@@ -923,7 +932,7 @@ bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeout
   WiFi.persistent(true);
   if (WiFi.status() == WL_CONNECTED && !forcePortal) return true;
   WiFiManager wm;
-  wm.setTitle("NM Quota Monitor");
+  wm.setTitle("AI Quota Monitor");
   wm.setConfigPortalTimeout(portalTimeoutMs / 1000);
 
   snprintf(g_host, sizeof(g_host), "%s", cfg.host);
@@ -1357,15 +1366,14 @@ static void centerPair(int y, const PoolState &p, int right) {
   t.print(cd);
 }
 
-// Bottom readout strip: TOKENS | COST | NEXT, EBU-style.
+// Bottom readout strip: TOKENS | VER | NEXT, EBU-style.
 static void readoutStrip(const QuotaState &q) {
   TFT_eSPI &t = display();
   const int y = LAYOUT_H - 30;
   t.drawFastHLine(MARGIN, y, LAYOUT_W - 2 * MARGIN, COLOR_EDGE);
-  char v0[16], v1[16], v2[16];
+  char v0[16], v2[16];
   if (q.oc_tokens_k >= 1000) snprintf(v0, sizeof(v0), "%.1fM", q.oc_tokens_k / 1000.0f);
   else snprintf(v0, sizeof(v0), "%.0fk", q.oc_tokens_k);
-  snprintf(v1, sizeof(v1), "$%.2f", q.oc_cost);
   if (q.oc_count) fmtCountdown(minReset(q), v2, sizeof(v2));
   else snprintf(v2, sizeof(v2), "--");
 
@@ -1375,14 +1383,14 @@ static void readoutStrip(const QuotaState &q) {
   const int c0 = MARGIN + 4, c1 = 118, c2 = 216;
 #endif
   tiny("TOKENS", c0, y + 5, COLOR_DIM, COLOR_BG);
-  tiny("COST", c1, y + 5, COLOR_DIM, COLOR_BG);
+  tiny("VER", c1, y + 5, COLOR_DIM, COLOR_BG);
   tiny("NEXT", c2, y + 5, COLOR_DIM, COLOR_BG);
   t.setTextFont(2);
   t.setTextColor(COLOR_TEXT, COLOR_BG);
   t.setCursor(c0, y + 14);
   t.print(v0);
   t.setCursor(c1, y + 14);
-  t.print(v1);
+  t.print(FW_VERSION);
   t.setTextColor(q.fresh ? COLOR_ICE : COLOR_DIM, COLOR_BG);
   t.setCursor(c2, y + 14);
   t.print(v2);
@@ -2150,7 +2158,7 @@ void setup() {
   g_serialMode = !netUp;  // no WiFi -> listen on USB Serial
   if (netUp) { pollNow(); pollAskNow(); }
   render();
-  Serial.println("cyd-quota-monitor boot ok");
+  Serial.println("ai-quota-monitor boot ok");
 }
 
 static void pollAskNow() {

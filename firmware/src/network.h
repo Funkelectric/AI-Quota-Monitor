@@ -13,7 +13,7 @@ void configSave(const NetConfig &cfg);
 
 /**
  * Bring up WiFi. Returns true when connected.
- * Opens the NM-Quota-Setup captive portal when no credentials are stored
+ * Opens the AI-Quota-Setup captive portal when no credentials are stored
  * (portalTimeoutMs) or when forcePortal is true (BOOT long-press path).
  */
 bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeoutMs = 180000);

@@ -274,7 +274,7 @@ void setup() {
   g_serialMode = !netUp;  // no WiFi -> listen on USB Serial
   if (netUp) { pollNow(); pollAskNow(); }
   render();
-  Serial.println("cyd-quota-monitor boot ok");
+  Serial.println("ai-quota-monitor boot ok");
 }
 
 static void pollAskNow() {

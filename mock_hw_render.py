@@ -92,7 +92,7 @@ def draw_f2(d, xy, s, fill, track=0):
 
 DATA = [("GO 5H", 99.7, 4 * 3600 + 31 * 60), ("GO WEEK", 92.4, 3 * 86400 + 14 * 3600),
         ("GO MONTH", 87.7, 14 * 86400 + 9 * 3600)]
-TOK, COST = "14.9k", "$0.00"
+TOK, VER, COST = "14.9k", "v0.1", "$0.00"
 SESS = [("ESP32 display choice bu", "Muse Spark 1.3 Contributor"),
         ("Pure-black redesign", "Muse Spark 1.3 Contributor"),
         ("CYD ask-screen mockup", "Muse Spark 1.3 Contributor")]
@@ -131,10 +131,10 @@ def strip(d):
     y = H - 26
     d.line([8, y, W - 8, y], fill=EDGE)
     nx = fmt_cd(min(s for _, _, s in DATA))
-    for x, lab in [(12, "TOKENS"), (112, "COST"), (196, "NEXT")]:
+    for x, lab in [(12, "TOKENS"), (112, "VER"), (196, "NEXT")]:
         d.text((x, y + 3), lab, font=F1, fill=DIM)
     draw_f2(d, (12, y + 12), TOK, TEXT)
-    draw_f2(d, (112, y + 12), COST, TEXT)
+    draw_f2(d, (112, y + 12), VER, TEXT)
     draw_f2(d, (196, y + 12), nx, ICE)
 
 def curve_points(n, x0, x1, y0, y1):
@@ -288,10 +288,10 @@ def strip2(d):
     y = H - 30  # hairline 210, labels 215, values 224..240 (mirrors readoutStrip)
     d.line([8, y, W - 8, y], fill=EDGE)
     nx = fmt_cd(min(s for _, _, s in DATA))
-    for x, lab in [(12, "TOKENS"), (112, "COST"), (196, "NEXT")]:
+    for x, lab in [(12, "TOKENS"), (112, "VER"), (196, "NEXT")]:
         d.text((x, y + 5), lab, font=F1, fill=DIM2)
     draw_f2(d, (12, y + 14), TOK, TEXT)
-    draw_f2(d, (112, y + 14), COST, TEXT)
+    draw_f2(d, (112, y + 14), VER, TEXT)
     draw_f2(d, (196, y + 14), nx, ICE)
 
 def wstatus(p):

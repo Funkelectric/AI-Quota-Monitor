@@ -54,7 +54,7 @@ bool netEnsureWiFi(NetConfig &cfg, bool forcePortal, unsigned long portalTimeout
   WiFi.persistent(true);
   if (WiFi.status() == WL_CONNECTED && !forcePortal) return true;
   WiFiManager wm;
-  wm.setTitle("NM Quota Monitor");
+  wm.setTitle("AI Quota Monitor");
   wm.setConfigPortalTimeout(portalTimeoutMs / 1000);
 
   snprintf(g_host, sizeof(g_host), "%s", cfg.host);

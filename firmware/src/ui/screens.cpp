@@ -162,15 +162,14 @@ static void centerPair(int y, const PoolState &p, int right) {
   t.print(cd);
 }
 
-// Bottom readout strip: TOKENS | COST | NEXT, EBU-style.
+// Bottom readout strip: TOKENS | VER | NEXT, EBU-style.
 static void readoutStrip(const QuotaState &q) {
   TFT_eSPI &t = display();
   const int y = LAYOUT_H - 30;
   t.drawFastHLine(MARGIN, y, LAYOUT_W - 2 * MARGIN, COLOR_EDGE);
-  char v0[16], v1[16], v2[16];
+  char v0[16], v2[16];
   if (q.oc_tokens_k >= 1000) snprintf(v0, sizeof(v0), "%.1fM", q.oc_tokens_k / 1000.0f);
   else snprintf(v0, sizeof(v0), "%.0fk", q.oc_tokens_k);
-  snprintf(v1, sizeof(v1), "$%.2f", q.oc_cost);
   if (q.oc_count) fmtCountdown(minReset(q), v2, sizeof(v2));
   else snprintf(v2, sizeof(v2), "--");
 
@@ -180,14 +179,14 @@ static void readoutStrip(const QuotaState &q) {
   const int c0 = MARGIN + 4, c1 = 118, c2 = 216;
 #endif
   tiny("TOKENS", c0, y + 5, COLOR_DIM, COLOR_BG);
-  tiny("COST", c1, y + 5, COLOR_DIM, COLOR_BG);
+  tiny("VER", c1, y + 5, COLOR_DIM, COLOR_BG);
   tiny("NEXT", c2, y + 5, COLOR_DIM, COLOR_BG);
   t.setTextFont(2);
   t.setTextColor(COLOR_TEXT, COLOR_BG);
   t.setCursor(c0, y + 14);
   t.print(v0);
   t.setCursor(c1, y + 14);
-  t.print(v1);
+  t.print(FW_VERSION);
   t.setTextColor(q.fresh ? COLOR_ICE : COLOR_DIM, COLOR_BG);
   t.setCursor(c2, y + 14);
   t.print(v2);

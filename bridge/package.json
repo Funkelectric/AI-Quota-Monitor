@@ -1,7 +1,7 @@
 {
-  "name": "cyd-quota-bridge",
+  "name": "ai-quota-bridge",
   "version": "0.1.0",
-  "description": "Local quota bridge for Antigravity IDE + OpenCode -> NM-CYD dashboard",
+  "description": "Local quota bridge for Antigravity IDE + OpenCode -> AI Quota Monitor dashboard",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",

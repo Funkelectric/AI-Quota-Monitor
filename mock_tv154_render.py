@@ -119,10 +119,10 @@ def strip240(d):
     d.line([8, y, W - 8, y], fill=M.EDGE)
     nx = M.fmt_cd(min(s for _, _, s in M.DATA))
     # Reflowed 320 cols [12,112,196] -> [12,92,168]: "4H 31M"(48px) 168..216.
-    for x, lab in [(12, "TOKENS"), (92, "COST"), (168, "NEXT")]:
+    for x, lab in [(12, "TOKENS"), (92, "VER"), (168, "NEXT")]:
         d.text((x, y + 5), lab, font=M.F1, fill=M.DIM)
     M.draw_f2(d, (12, y + 14), M.TOK, M.TEXT)
-    M.draw_f2(d, (92, y + 14), M.COST, M.TEXT)
+    M.draw_f2(d, (92, y + 14), M.VER, M.TEXT)
     M.draw_f2(d, (168, y + 14), nx, M.ICE)
 
 
