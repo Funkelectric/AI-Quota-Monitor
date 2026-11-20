@@ -5,6 +5,8 @@ monitoring (Go 5h / Week / Month windows, daily tokens, live session
 readout), **firmware v0.2** shown in the readout strip
 (`TOKENS | VER | NEXT`).
 
+> **Changelog:** see [CHANGELOG.md](CHANGELOG.md).
+
 ## Screenshots
 
 | Real View Both Device | Reak Ask View |
@@ -105,7 +107,7 @@ permission errors.
 | Backlight / power | BL `GPIO21` | BL `GPIO19` active-low, LCD power rail `GPIO21` active-low (must be enabled or the screen stays black) |
 | Screens | 01 QUOTA · 02 WINDOWS · 03 SCOPE · 04 STANDBY · 05 ASK | **01 QUOTA · 02 WINDOWS only** (same bridge, same data) |
 | Env | `cyd-st7789` (default) / `cyd-ili9341` | `tv154-st7789` (`tv154-diag` = PWR/BL sweep test) |
-| Firmware | v0.2 (strip VER field) | v0.1 (strip VER field) |
+| Firmware | v0.2 (strip VER field) | v0.2 (strip VER field) |
 
 ## 1. Bridge — running manual (detail)
 
@@ -138,10 +140,11 @@ Environment (`bridge/.env.example` documents most of these):
 Endpoints:
 
 - `GET /api/quota` → `{ ts, overall_status, opencode: { connected, today_cost_usd, today_tokens_k, providers[], sessions[] } }`. Each provider: `{ name, remaining_pct, reset_in_sec, status }` with `ok ≥ 50 > warn ≥ 20 > crit`. Each session: `{ title, model }` (pretty model name, e.g. `Muse Spark 1.3 Contributor` — no provider prefix, no thinking level).
-- `GET /health` → `{ ok, ts, ask_pending }`.
+- `GET /health` → `{ ok, ts, ask_pending, endwork_pending }`.
 - `GET /api/ask` → pending question or `204` when none. `?id=` returns that question's state, including the answer once resolved.
 - `POST /api/ask { question, options[], session?, detail?, timeout_sec? }` → creates a pending question (replaces any previous one). Options are strings or `{ id, label }` (max 4, labels ≤ 24 chars, question ≤ 120 chars).
 - `POST /api/ask/answer { id, option_id }` → records the tap. `410` when the question is gone.
+- `GET /api/endofwork` → pending ended-work event or `204`. `POST /api/endofwork { title, model?, session? }` → latches it (replaces). `POST /api/endofwork/dismiss { id }` → clears it (`410` when gone). The pending event is embedded in `GET /api/quota` as `endofwork: { id, title, model, ended_at }` so the CYD picks it up on its normal poll.
 
 Data sources (in order, each isolated so one failure never crashes the bridge):
 1. OpenCode Console `/api/go/status` with the OAuth login from the local DB (5h/weekly/monthly meters).
@@ -203,12 +206,22 @@ TV-154: tap top key = next screen (01↔02), hold 5 s = wipe + portal):
    (VER = firmware version, currently `v0.2`).
 2. **02 · WINDOWS** — per-window rows with centered big `%` and
    right-aligned readable reset countdowns + thick bars.
+   **TV-154** runs 01 + 02 only (same bridge, same data) plus END - WORK
+   (below); no 03/04/05 screens.
 3. **03 · SCOPE** (CYD only) — big min-level ring gauge + per-window readouts.
 4. **04 · STANDBY** (CYD only) — desk clock + level bars.
 5. **05 · ASK** (CYD only) — pops up automatically when `GET /api/ask` reports a
    pending question (polled every 5 s). Question + option preview on top,
    large answer buttons at the bottom (2/3/4-option layouts). A tap posts
    `/api/ask/answer` and returns to QUOTA; expiry clears back automatically.
+6. **END - WORK** — latches when a user-facing OpenCode
+   conversation goes idle (bridge watches `session_v2` `time_idle`, fires
+   within ~5 s, or `POST /api/endofwork` manually / `bridge/endofwork-cyd.sh`).
+   Shows the ended work + single centered `END OF WORK` hero blinking
+   white ↔ ice-blue (2 s tick + every poll). Stays until dismiss (CYD: any
+   screen touch; TV-154: top-key tap, no ASK screen involved), which also
+   posts `/api/endofwork/dismiss` to clear the bridge slot. TV-154 shows
+   `TOUCH TOP TO DISMISS`; CYD shows `TOUCH SCREEN TO DISMISS`.
 
 LED (CYD only): green ok / amber warn / breathing-red crit / dim-blue pulse
 offline. Backlight follows the LDR (EMA + deadband, full swing <5s) with a readable floor.

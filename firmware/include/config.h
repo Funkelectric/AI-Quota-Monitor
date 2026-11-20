@@ -65,12 +65,14 @@
 #define SCR_SCOPE     2
 #define SCR_CLOCK     3
 #define SCR_ASK       4
-#define SCR_ENDWORK   5
 #ifdef TV154
-// TV-154 port scope: 01 QUOTA + 02 WINDOWS only (240x240, single button).
-#define SCR_COUNT     2
+// TV-154 scope: 01 QUOTA + 02 WINDOWS + END - WORK latch (no ASK screen,
+// single top key dismisses the latch).
+#define SCR_ENDWORK   2
+#define SCR_COUNT     3
 #define HAS_XPT2046   0
 #else
+#define SCR_ENDWORK   5
 #define SCR_COUNT     6
 #define HAS_XPT2046   1
 #endif

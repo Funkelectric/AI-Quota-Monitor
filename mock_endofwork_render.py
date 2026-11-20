@@ -10,13 +10,13 @@ Layout (sums to 240):
   work title      y=50    font-2 TEXT, centered, truncated to 292px
   work sub        y=68    font-2 DIM (session - model), centered, truncated to 292px
   hairline        y=88    x13..307 EDGE
-  hero "END OF"  y=96    font6 (46px) centered, WHITE frame / ICE frame
-  hero "WORK"    y=146   font6 (46px) centered, WHITE frame / ICE frame
-  dismiss button  8,196,304,32 rounded r=3 EDGE outline + CARD fill (any tap dismisses)
-  button label    centered font-2 "TOUCH TO DISMISS" DIM
+  hero            single "END OF WORK" line, vertically centered in 88..196
+                  (center y=142), WHITE frame / ICE frame, auto-fit 46px->32px
+  dismiss button  8,196,304,32 rounded r=3 outline (pulses EDGE/ICE) + CARD fill
+  button label    centered font-2 "TOUCH SCREEN TO DISMISS" DIM
 """
 import os
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import mock_hw_render as M
 
 W, H = M.W, M.H
@@ -27,7 +27,9 @@ F1, F6 = M.F1, M.F6
 WORK_TITLE = "CYD ask-screen mockup"
 WORK_SUB = "curious-meadow - Muse Spark 1.3 Contributor"
 
-HERO = ["END OF", "WORK"]
+HERO = "END OF WORK"
+HERO_BIG = M.F6
+HERO_SMALL = ImageFont.truetype(M.MONO, 32)
 BTN = (8, 196, 304, 32)
 HINT = "TOUCH SCREEN TO DISMISS"
 
@@ -51,9 +53,10 @@ def screen_endofwork(hero_color):
     center_f2(d, 50, trunc(WORK_TITLE, 292), TEXT)
     center_f2(d, 68, trunc(WORK_SUB, 292), DIM)
     d.line([13, 88, 307, 88], fill=EDGE)
-    for i, line in enumerate(HERO):
-        tw = int(d.textlength(line, font=F6))
-        d.text(((W - tw) // 2, 96 + i * 50), line, font=F6, fill=hero_color)
+    # Single centered hero line in 88..196 (center y=142), auto-fit like fw.
+    hf, hs = (HERO_BIG, 46) if d.textlength(HERO, font=HERO_BIG) <= 292 else (HERO_SMALL, 32)
+    tw = int(d.textlength(HERO, font=hf))
+    d.text(((W - tw) // 2, 142 - hs // 2), HERO, font=hf, fill=hero_color)
     x, y, w, h = BTN
     d.rounded_rectangle([x, y, x + w, y + h], 3, outline=EDGE)
     d.rounded_rectangle([x + 1, y + 1, x + w - 1, y + h - 1], 2, outline=None, fill=CARD)

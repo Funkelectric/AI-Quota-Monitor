@@ -9,12 +9,12 @@ nearest-upscaled x3 -> 720x720 PNG.
 Layout (sums to 240, H unchanged):
   header          0..28   CARD, "END - WORK" + packed LIVE/WIFI/clock, EDGE hairline y=28
   tiny label      y=38    "ENDED WORK" font1 DIM, centered
-  work title      y=50    font-2 TEXT, centered, truncated to 224px (W-16, like session240)
-  work sub        y=68    font-2 DIM, centered, truncated to 224px
+  work title      y=50    font-2 TEXT, centered, truncated to 212px (W-28, like fw)
+  work sub        y=68    font-2 DIM, centered, truncated to 212px
   hairline        y=88    x13..227 EDGE (mirrors CYD 13..307 margin)
-  hero "END OF"  y=96    font6 (F6 46px, 166px wide) centered, WHITE frame / ICE frame
-  hero "WORK"    y=146   font6 (F6 46px, 110px wide) centered, WHITE frame / ICE frame
-  dismiss button  8,196,224,32 rounded r=3 EDGE outline + CARD fill (top tap dismisses)
+  hero            single "END OF WORK" line, centered in 88..196 (y=142),
+                  WHITE frame / ICE frame, auto-fit 46px->32px like fw
+  dismiss button  8,196,224,32 rounded r=3 outline (pulses EDGE/ICE) + CARD fill
   button label    centered font-2 "TOUCH TOP TO DISMISS" DIM (148px < 222px inner)
 RGB565 palette only, no new colors.
 """
@@ -23,7 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mock_hw_render as M  # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
+from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 W, H = 240, 240
 S = 3
@@ -34,10 +34,12 @@ F1, F6 = M.F1, M.F6
 WORK_TITLE = "CYD ask-screen mockup"
 WORK_SUB = "curious-meadow - Muse Spark 1.3 Contributor"
 
-HERO = ["END OF", "WORK"]
+HERO = "END OF WORK"
+HERO_BIG = M.F6
+HERO_SMALL = ImageFont.truetype(M.MONO, 32)
 BTN = (8, 196, 224, 32)
 HINT = "TOUCH TOP TO DISMISS"
-BUDGET = W - 16  # 224px, like session240
+BUDGET = W - 28  # 212px, mirrors fw LAYOUT_W-28
 
 
 def header240(d, section):
@@ -76,9 +78,10 @@ def screen_tv154_endofwork(hero_color):
     center_f2(d, 50, trunc(WORK_TITLE, BUDGET), TEXT)
     center_f2(d, 68, trunc(WORK_SUB, BUDGET), DIM)
     d.line([13, 88, W - 13, 88], fill=EDGE)
-    for i, line in enumerate(HERO):
-        tw = int(d.textlength(line, font=F6))
-        d.text(((W - tw) // 2, 96 + i * 50), line, font=F6, fill=hero_color)
+    # Single centered hero line in 88..196 (center y=142), auto-fit like fw.
+    hf, hs = (HERO_BIG, 46) if d.textlength(HERO, font=HERO_BIG) <= BUDGET else (HERO_SMALL, 32)
+    tw = int(d.textlength(HERO, font=hf))
+    d.text(((W - tw) // 2, 142 - hs // 2), HERO, font=hf, fill=hero_color)
     x, y, w, h = BTN
     d.rounded_rectangle([x, y, x + w, y + h], 3, outline=EDGE)
     d.rounded_rectangle([x + 1, y + 1, x + w - 1, y + h - 1], 2, outline=None, fill=CARD)
@@ -90,8 +93,7 @@ if __name__ == "__main__":
     outdir = os.path.dirname(os.path.abspath(__file__))
     # Fit audit (hardware-honest proof) before render.
     tmp = ImageDraw.Draw(Image.new("RGB", (W, H)))
-    for line in HERO:
-        print(f"hero {line!r}: F6 width {int(tmp.textlength(line, font=F6))} vs W {W}")
+    print(f"hero {HERO!r}: F6 {int(tmp.textlength(HERO, font=HERO_BIG))} vs budget {BUDGET}")
     print(f"hint {HINT!r}: f2 {M.f2_width(HINT)} vs btn inner {BTN[2] - 2}")
     print(f"title {WORK_TITLE!r}: f2 {M.f2_width(WORK_TITLE)} vs budget {BUDGET} -> {trunc(WORK_TITLE, BUDGET)!r}")
     print(f"sub {WORK_SUB!r}: f2 {M.f2_width(WORK_SUB)} vs budget {BUDGET} -> {trunc(WORK_SUB, BUDGET)!r}")
