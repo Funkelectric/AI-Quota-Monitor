@@ -10,7 +10,7 @@ Transform an **NMMiner NM-CYD** (`ESP32-2432S028R`, 2.8" Cheap Yellow Display) f
 
 ### Why a Two-Part Architecture?
 An ESP32 cannot directly inspect local OS processes (Antigravity's local Language Server) or read local developer credentials/SQLite logs (OpenCode). Therefore, the system consists of:
-1. **Local Quota Bridge (`bridge/`)**: A lightweight Node.js/TypeScript daemon running on your dev machine that collects Antigravity & OpenCode quotas and exposes a unified, compact JSON payload over **LAN HTTP** (and optionally **USB Serial**).
+1. **Local Quota Bridge (`bridge/`)**: A lightweight Node.js/TypeScript daemon running on the PiBiatch that collects Antigravity & OpenCode quotas and exposes a unified, compact JSON payload over **LAN HTTP** (and optionally **USB Serial**).
 2. **NM-CYD Firmware (`firmware/`)**: A PlatformIO + Arduino/LVGL firmware flashed onto the ESP32-2432S028R that renders a 320×240 dark-mode dashboard, supports touch navigation, and uses the onboard RGB LED + light sensor for ambient status alerts and auto-dimming.
 
 > **Hardware Recovery Note**: Flashing custom firmware to the NM-CYD is reversible. Per NMTech documentation, the original NMMiner firmware and its built-in license can be restored anytime via `https://flash.nmminer.com`.

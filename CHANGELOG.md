@@ -2,6 +2,38 @@
 
 All notable changes to AI Quota Monitor (bridge + CYD/TV-154 firmware).
 
+## [0.3.0] — 2026-11-22 (END OF TASK vs END OF WORK)
+
+Firmware `FW_VERSION` `v0.2` → `v0.3` on both boards. Bridge `0.1.0` → `0.3.0`.
+`END OF WORK` stays valid (fully done); `END OF TASK` is the new latched state
+for "conversation back to user, N background agents still running".
+
+### Added
+- **END OF TASK latch (both boards, same shared screen):** bridge counts busy
+  children (`session_v2` `parent_id = <root>`, `time_idle IS NULL`, **plus running shells** (`job` `status='running'`,
+  `time_updated`-fresh) and embeds `endofwork.running: N` in `GET /api/quota`
+  (`+12 B`, still <150 B). `0` = `END OF WORK` (blinks white ↔ ice-blue);
+  `>0` = `END OF TASK` hero (solid ice-blue, no blink) + `N agents still
+  running` subline (`1 agent…` singular). Hero+sub centered as one block
+  (hero `113..145`, sub `155..171`, center `142`, clearances `25/25` on 240px;
+  same law scales to 320px). Per-tick recount flips TASK → WORK (new id)
+  when the last agent finishes.
+- **Bridge:** `endWorkStore.running_agents` (+ `setRunningAgents` in-place
+  recount), watcher fire-time count + TASK→WORK re-fire,
+  `POST /api/endofwork { running? }` passthrough. Manual:
+  `bridge/endofwork-cyd.sh "Title" ["Model"] [--running N]`.
+- **Firmware:** `QuotaState.endwork_running` (+1 B), `running` parse
+  (clamped `0..99`), `END - TASK` header override, block-centered TASK layout,
+  stale `screens.h` "CYD only" comment fixed (both boards share the latch).
+- TV-154 `END OF TASK` mockups: `mock_tv154_endotask_render.py` →
+  `mockup-tv154-endotask-ice.png` (reference) / `-white.png` (alt) /
+  `-endotask.png` (combo); `PLAN-ENDOFTASK.md` (feasibility + measured audit).
+
+### Changed
+- Docs (`README.md`) split END latch into WORK vs TASK, endpoints show
+  `running`, Chromebook flash line uses the LAN tarball
+  (`curl …/ew.tgz | tar -xz -C ~ && cd ~/firmware && … flash-cyd.sh`).
+
 ## [0.2.0] — 2026-11-20 (CYD + TV-154 END OF WORK)
 
 Branch `feature/endofwork` (merged). Firmware `FW_VERSION` `v0.1` → `v0.2` on both boards.
@@ -40,7 +72,7 @@ Branch `feature/endofwork` (merged). Firmware `FW_VERSION` `v0.1` → `v0.2` on 
 - `setTextSize(1)` + datum reset forced on ENDWORK entry (clock screen
   leaked size 2/datum), serial latch logging added.
 - `paste.rs` outage: Chromebook one-liner moved to catbox, then to a LAN
-  tarball served from the bridge host (no GitHub round-trip needed).
+  tarball served from the PiBiatch (no GitHub round-trip needed).
 
 ## [0.1.0] — 2026-11-19 / 2026-11-20
 

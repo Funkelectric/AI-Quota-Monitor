@@ -100,7 +100,7 @@
 #define BUTTON_LONG_MS 5000
 
 // Firmware version shown in the readout strip (VER field), both hardware.
-#define FW_VERSION "v0.2"
+#define FW_VERSION "v0.3"
 
 // Compact payload guard: ESP32 parses this on the stack.
 #define QUOTA_JSON_MAX 2048
@@ -123,8 +123,10 @@
 #define ASK_ID_MAX 31
 #define ASK_POLL_SEC 5
 
-// END - WORK screen: latched event embedded in the quota payload
-// ("endofwork": {id, title, model, ended_at}). No extra poll needed —
+// END latch screen: event embedded in the quota payload
+// ("endofwork": {id, title, model, ended_at, running}). running==0 shows
+// END OF WORK (fully done); running>0 shows END OF TASK + "N agents still
+// running" (conversation back, background agents running). No extra poll —
 // quota poll + USB-serial quota frames carry it. Touch dismisses locally
 // and POSTs /api/endofwork/dismiss to clear the bridge slot.
 #define ENDWORK_ID_MAX 31

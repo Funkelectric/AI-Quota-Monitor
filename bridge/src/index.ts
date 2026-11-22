@@ -29,7 +29,7 @@ function payloadFrom(opencode: OpenCodeBlock | null): QuotaPayload | null {
     ts: Math.floor(Date.now() / 1000),
     overall_status: "ok",
     opencode,
-    endofwork: ew ? { id: ew.id, title: ew.title, model: ew.model, ended_at: ew.ended_at } : null,
+    endofwork: ew ? { id: ew.id, title: ew.title, model: ew.model, ended_at: ew.ended_at, running: ew.running_agents } : null,
   };
   payload.overall_status = overallStatusFor(payload);
   return payload;
@@ -49,7 +49,7 @@ async function livePayload(): Promise<QuotaPayload> {
     ts: Math.floor(Date.now() / 1000),
     overall_status: "ok",
     opencode,
-    endofwork: ew ? { id: ew.id, title: ew.title, model: ew.model, ended_at: ew.ended_at } : null,
+    endofwork: ew ? { id: ew.id, title: ew.title, model: ew.model, ended_at: ew.ended_at, running: ew.running_agents } : null,
   };
   payload.overall_status = overallStatusFor(payload);
   return payload;

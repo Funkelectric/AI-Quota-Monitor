@@ -25,12 +25,15 @@ struct QuotaState {
   SessionState sessions[SESSIONS_MAX];
   uint8_t session_count;
 
-  // Latched END OF WORK event (bridge /api/endofwork, embedded in quota).
+  // Latched END OF WORK / END OF TASK event (bridge /api/endofwork, embedded in quota).
+  // running == 0 -> END OF WORK (fully done); running > 0 -> END OF TASK
+  // (conversation back with N background agents still running).
   bool has_endwork;
   char endwork_id[ENDWORK_ID_MAX + 1];
   char endwork_title[ENDWORK_TITLE_MAX + 1];
   char endwork_model[ENDWORK_MODEL_MAX + 1];
   long endwork_ts;
+  uint8_t endwork_running;
 
   uint8_t overall;  // ST_OK / ST_WARN / ST_CRIT / ST_OFFLINE
   unsigned long updated_ms;

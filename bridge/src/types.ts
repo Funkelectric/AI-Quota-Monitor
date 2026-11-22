@@ -23,13 +23,15 @@ export interface SessionInfo {
   model: string;
 }
 
-/** Latched END OF WORK event (CYD END - WORK screen). Compact (<150B). */
+/** Latched END OF WORK / END OF TASK event (END latch screen). Compact (<150B). */
 export interface EndWorkInfo {
   id: string;
   title: string;
   model: string;
   /** Unix epoch seconds when the work ended */
   ended_at: number;
+  /** Busy background agents for this session: 0 = END OF WORK, >0 = END OF TASK */
+  running: number;
 }
 
 export interface OpenCodeBlock {
