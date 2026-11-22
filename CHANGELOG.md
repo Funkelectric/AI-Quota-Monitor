@@ -28,11 +28,20 @@ for "conversation back to user, N background agents still running".
 - TV-154 `END OF TASK` mockups: `mock_tv154_endotask_render.py` →
   `mockup-tv154-endotask-ice.png` (reference) / `-white.png` (alt) /
   `-endotask.png` (combo); `PLAN-ENDOFTASK.md` (feasibility + measured audit).
+- CYD-320 `END OF TASK` mockups: `mock_cyd_endotask_render.py` →
+  `mockup-cyd-endotask-ice.png` (reference) / `-white.png` (alt) /
+  `-endotask.png` (combo). Same block-center law on 292 px budget
+  (hero 211/292, `2 agents…` 139/292, center 142, `END - TASK` gap 108).
+  Firmware parity verified (`screens.cpp:693-785`, `quota_state.*`),
+  `pio run -e cyd-st7789 -e cyd-ili9341` both SUCCESS
+  (RAM 17.1% / Flash 35.6%). CYD flashed from Chromebook via LAN tarball;
+  white/inverted panel = `cyd-ili9341` revision (documented one-liners).
 
 ### Changed
 - Docs (`README.md`) split END latch into WORK vs TASK, endpoints show
-  `running`, Chromebook flash line uses the LAN tarball
-  (`curl …/ew.tgz | tar -xz -C ~ && cd ~/firmware && … flash-cyd.sh`).
+  `running`, Chromebook flash lines use the LAN tarball
+  (`curl …/ew.tgz | tar -xz -C ~ && cd ~/firmware && … flash-cyd.sh`),
+  with explicit copy-paste lines for `tv154-st7789` / `cyd-st7789` / `cyd-ili9341`.
 
 ## [0.2.0] — 2026-11-20 (CYD + TV-154 END OF WORK)
 
