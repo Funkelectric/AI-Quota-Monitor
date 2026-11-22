@@ -113,13 +113,15 @@ bool parseQuotaPayload(const char *json, size_t len, QuotaState &out) {
     next.overall = worst;
   }
 
-  // END OF WORK latch (bridge embeds "endofwork": {id,title,model,ended_at}).
+  // END OF WORK / END OF TASK latch (bridge embeds "endofwork":
+  // {id,title,model,ended_at,running}). running==0 -> WORK, >0 -> TASK.
   // Missing/null -> no event. Compact enough to stay inside QUOTA_JSON_MAX.
   next.has_endwork = false;
   next.endwork_id[0] = '\0';
   next.endwork_title[0] = '\0';
   next.endwork_model[0] = '\0';
   next.endwork_ts = 0;
+  next.endwork_running = 0;
   JsonVariant ew = g_doc["endofwork"];
   if (!ew.isNull() && ew.is<JsonObject>()) {
     JsonObject eo = ew.as<JsonObject>();
@@ -129,6 +131,10 @@ bool parseQuotaPayload(const char *json, size_t len, QuotaState &out) {
       copyName(next.endwork_title, sizeof(next.endwork_title), eo["title"] | "?");
       copyName(next.endwork_model, sizeof(next.endwork_model), eo["model"] | "");
       next.endwork_ts = eo["ended_at"] | 0L;
+      int run = eo["running"] | 0;
+      if (run < 0) run = 0;
+      if (run > 99) run = 99;
+      next.endwork_running = (uint8_t)run;
       next.has_endwork = true;
     }
   }

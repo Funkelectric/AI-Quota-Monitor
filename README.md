@@ -2,7 +2,7 @@
 
 Standalone desktop hardware dashboard for real-time **OpenCode** quota
 monitoring (Go 5h / Week / Month windows, daily tokens, live session
-readout), **firmware v0.2** shown in the readout strip
+readout), **firmware v0.3** shown in the readout strip
 (`TOKENS | VER | NEXT`).
 
 > **Changelog:** see [CHANGELOG.md](CHANGELOG.md).
@@ -28,7 +28,7 @@ readout), **firmware v0.2** shown in the readout strip
 > exclusively from OpenCode (Console API, `opencode-quota` fallback, local
 > DB/stats), and the firmware renders only OpenCode windows + sessions.
 
-Two parts: a **bridge** (Node.js daemon on the dev machine that reads local
+Two parts: a **bridge** (Node.js daemon on the PiBiatch that reads local
 OpenCode quota + session data and serves it over LAN HTTP / USB serial) and
 the **firmware** (PlatformIO dashboard). One bridge serves both hardware.
 
@@ -62,28 +62,28 @@ the question-answering design.
 
 ## Install (quickstart)
 
-Prerequisites: Node.js 22+ on the dev machine, OpenCode with local data
+Prerequisites: Node.js 22+ on the PiBiatch, OpenCode with local data
 (`~/.local/share/opencode/opencode.db`), the board on USB, PlatformIO
 (`pip install --user platformio`) only if you build from source.
 
-1. **Bridge** (dev machine, once):
+1. **Bridge** (PiBiatch, once):
    ```bash
    cd bridge && npm install && cp .env.example .env && npm run build
    setsid nohup node dist/index.js > /tmp/opencode/bridge.log 2>&1 < /dev/null &
    curl http://127.0.0.1:3847/health   # {"ok":true,...}
    ```
    Keep `HOST=0.0.0.0` in `.env` so the board can reach it over LAN.
-2. **Flash** (from anywhere, script syncs sources itself):
+2. **Flash** (v0.3, from the repo checkout — paste.rs retired):
    ```bash
-   curl -fsSL https://paste.rs/LPADW | bash -s -- cyd-st7789     # CYD 2.8"
-   curl -fsSL https://paste.rs/LPADW | bash -s -- tv154-st7789   # TV-154 1.54"
+   cd firmware && PORT=/dev/ttyUSB0 bash flash-cyd.sh tv154-st7789   # TV-154 1.54" (this release)
+   PORT=/dev/ttyUSB0 bash flash-cyd.sh cyd-st7789                    # CYD 2.8" (same binary split)
    ```
    White/inverted CYD screen → re-run with `cyd-ili9341`. Black TV-154
    screen → flash `tv154-diag` and report which color step lights up
    (see Troubleshooting).
 3. **Wi-Fi + bridge address**: on first boot the board opens the
    **`AI-Quota-Setup`** access point. Join it from a phone/laptop, enter
-   your Wi-Fi credentials and the bridge host = dev machine **LAN IP**
+   your Wi-Fi credentials and the bridge host = PiBiatch **LAN IP**
    (e.g. `192.168.1.59` — `*.local` names routinely fail on hotspots),
    port `3847`, poll `15`. Saved to NVS; survives reflash.
 4. **Verify**: device shows 01-QUOTA with live % bars; bridge side
@@ -91,10 +91,25 @@ Prerequisites: Node.js 22+ on the dev machine, OpenCode with local data
    `pio device monitor --port /dev/ttyUSB0 -b 115200` prints
    `ai-quota-monitor boot ok` + `heap=...` lines.
 
-Chromebook (Crostini): share the USB-serial device with Linux first
-(Settings → Developers → Linux → Manage USB devices), then run the same
-flash line in the Linux terminal. `sudo chmod 666 /dev/ttyUSB0` fixes
-permission errors.
+Chromebook (Crostini) — share the USB-serial device with Linux first
+(Settings → Developers → Linux → Manage USB devices), then paste this
+**one line** in the Linux terminal (pulls the v0.3 sources as a LAN tarball
+from the PiBiatch and flashes the TV-154):
+
+```bash
+curl -fsSL http://192.168.1.59:8000/ew.tgz | tar -xz -C ~ && cd ~/firmware && PORT=/dev/ttyUSB0 bash flash-cyd.sh tv154-st7789
+```
+
+`sudo chmod 666 /dev/ttyUSB0` fixes permission errors; swap `tv154-st7789`
+for `cyd-st7789` (or `cyd-ili9341` for white/inverted CYD) for the 2.8" board.
+PlatformIO is required in the Chromebook Linux container once:
+`pip install --user platformio --break-system-packages`.
+
+Publish the tarball (PiBiatch, once per release):
+
+```bash
+cd ~/AI-Quota-Monitor && tar -czf /tmp/ew.tgz firmware && (cd /tmp && python3 -m http.server 8000)
+```
 
 ## Hardware versions
 
@@ -107,7 +122,7 @@ permission errors.
 | Backlight / power | BL `GPIO21` | BL `GPIO19` active-low, LCD power rail `GPIO21` active-low (must be enabled or the screen stays black) |
 | Screens | 01 QUOTA · 02 WINDOWS · 03 SCOPE · 04 STANDBY · 05 ASK | **01 QUOTA · 02 WINDOWS only** (same bridge, same data) |
 | Env | `cyd-st7789` (default) / `cyd-ili9341` | `tv154-st7789` (`tv154-diag` = PWR/BL sweep test) |
-| Firmware | v0.2 (strip VER field) | v0.2 (strip VER field) |
+| Firmware | v0.3 (strip VER field) | v0.3 (strip VER field) |
 
 ## 1. Bridge — running manual (detail)
 
@@ -134,7 +149,7 @@ Environment (`bridge/.env.example` documents most of these):
 | `OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | Credential + usage + session DB path. |
 | `OPENCODE_QUOTA_BIN` | `npx` | Fallback: `opencode-quota show --json` reader. |
 | `SESSION_ACTIVE_MIN` | `10` | Session counts as active if touched within N minutes. |
-| `CYD_BRIDGE_URL` | `http://192.168.1.59:3847` | Used by `ask-cyd.sh` (LAN IP of this machine). |
+| `CYD_BRIDGE_URL` | `http://192.168.1.59:3847` | Used by `ask-cyd.sh` (LAN IP of the PiBiatch). |
 | `SERIAL_PORT` / `SERIAL_BAUD` / `SERIAL_INTERVAL_SEC` | _(unset)_ / `115200` / `10` | Optional USB Serial push. Also `--serial /dev/ttyUSB0`. |
 
 Endpoints:
@@ -144,7 +159,7 @@ Endpoints:
 - `GET /api/ask` → pending question or `204` when none. `?id=` returns that question's state, including the answer once resolved.
 - `POST /api/ask { question, options[], session?, detail?, timeout_sec? }` → creates a pending question (replaces any previous one). Options are strings or `{ id, label }` (max 4, labels ≤ 24 chars, question ≤ 120 chars).
 - `POST /api/ask/answer { id, option_id }` → records the tap. `410` when the question is gone.
-- `GET /api/endofwork` → pending ended-work event or `204`. `POST /api/endofwork { title, model?, session? }` → latches it (replaces). `POST /api/endofwork/dismiss { id }` → clears it (`410` when gone). The pending event is embedded in `GET /api/quota` as `endofwork: { id, title, model, ended_at }` so the CYD picks it up on its normal poll.
+- `GET /api/endofwork` → pending ended-work/task event or `204`. `POST /api/endofwork { title, model?, session?, running? }` → latches it (replaces). `POST /api/endofwork/dismiss { id }` → clears it (`410` when gone). The pending event is embedded in `GET /api/quota` as `endofwork: { id, title, model, ended_at, running }` so the device picks it up on its normal poll (`running: 0` = WORK, `>0` = TASK).
 
 Data sources (in order, each isolated so one failure never crashes the bridge):
 1. OpenCode Console `/api/go/status` with the OAuth login from the local DB (5h/weekly/monthly meters).
@@ -156,11 +171,12 @@ Data sources (in order, each isolated so one failure never crashes the bridge):
 Keep-alive (the bridge must survive shell exits — use `setsid`):
 
 ```bash
+cd bridge && npm install && npm run build  # after pulling v0.3 sources
 cd bridge && setsid nohup node dist/index.js > /tmp/opencode/bridge.log 2>&1 < /dev/null &
 curl http://<lan-ip>:3847/health
 ```
 
-Reference deployment: this machine, LAN IP `192.168.1.59`, port `3847`.
+Reference deployment: PiBiatch, LAN IP `192.168.1.59`, port `3847`.
 
 ### Asking via the device (CYD 05 · ASK only)
 
@@ -192,7 +208,7 @@ Hold `BOOT` + tap `RST` if upload fails to sync (CYD); on TV-154
 power-cycle into flash mode and retry.
 
 First boot with no Wi-Fi opens the **`AI-Quota-Setup`** access point. Join
-it from a phone/laptop and set **Bridge host to the dev machine's LAN IP**
+it from a phone/laptop and set **Bridge host to the PiBiatch's LAN IP**
 (e.g. `192.168.1.59` — mDNS `*.local` routinely fails on hotspots), port
 `3847`, poll interval `15`. Credentials persist in NVS.
 
@@ -203,7 +219,7 @@ TV-154: tap top key = next screen (01↔02), hold 5 s = wipe + portal):
 1. **01 · QUOTA** — hero quota curve, per-window labels, SESSION strip
    (conversation title + pretty model, `x/y` pager rotating every 10 s,
    pager hidden when only one session is active), TOKENS / VER / NEXT strip
-   (VER = firmware version, currently `v0.2`).
+   (VER = firmware version, currently `v0.3`).
 2. **02 · WINDOWS** — per-window rows with centered big `%` and
    right-aligned readable reset countdowns + thick bars.
    **TV-154** runs 01 + 02 only (same bridge, same data) plus END - WORK
@@ -214,14 +230,22 @@ TV-154: tap top key = next screen (01↔02), hold 5 s = wipe + portal):
    pending question (polled every 5 s). Question + option preview on top,
    large answer buttons at the bottom (2/3/4-option layouts). A tap posts
    `/api/ask/answer` and returns to QUOTA; expiry clears back automatically.
-6. **END - WORK** — latches when a user-facing OpenCode
+6. **END latch — WORK vs TASK** — latches when a user-facing OpenCode
    conversation goes idle (bridge watches `session_v2` `time_idle`, fires
    within ~5 s, or `POST /api/endofwork` manually / `bridge/endofwork-cyd.sh`).
-   Shows the ended work + single centered `END OF WORK` hero blinking
-   white ↔ ice-blue (2 s tick + every poll). Stays until dismiss (CYD: any
-   screen touch; TV-154: top-key tap, no ASK screen involved), which also
-   posts `/api/endofwork/dismiss` to clear the bridge slot. TV-154 shows
-   `TOUCH TOP TO DISMISS`; CYD shows `TOUCH SCREEN TO DISMISS`.
+   Both states stay until dismiss (CYD: any screen touch; TV-154: top-key tap,
+   no ASK screen involved), which also posts `/api/endofwork/dismiss` to clear
+   the bridge slot. TV-154 shows `TOUCH TOP TO DISMISS`;
+   CYD shows `TOUCH SCREEN TO DISMISS`.
+   - **END OF WORK** (`running: 0`, fully done): ended work + single centered
+     `END OF WORK` hero blinking white ↔ ice-blue (2 s tick + every poll).
+   - **END OF TASK** (`running: N > 0`, conversation back but N background
+     agents/shells still running): `END OF TASK` hero in solid ice-blue (no blink) +
+     `N agents still running` subline below it (`1 agent…` singular); the pair
+     is centered as one block between the hairline and the dismiss button.
+     The bridge counts busy subagents (`session_v2` children) **plus running
+     background shells (`job` table, `status='running'`)**.
+     When the last one finishes the bridge re-fires the slot as WORK.
 
 LED (CYD only): green ok / amber warn / breathing-red crit / dim-blue pulse
 offline. Backlight follows the LDR (EMA + deadband, full swing <5s) with a readable floor.
@@ -256,6 +280,7 @@ curve/truncation algorithms as the firmware, 1× canvas nearest-upscaled ×3:
 ```bash
 python3 mock_hw_render.py       # writes hw-ov/prov/scope/ask.png (+ v2 proposals)
 python3 mock_tv154_render.py   # writes hw-tv154-ov/prov.png (240x240)
+python3 mock_tv154_endotask_render.py  # writes mockup-tv154-endotask-ice/white.png + combo (END OF TASK, v0.3)
 python3 -m http.server 8080  # view from another machine on the LAN
 ```
 

@@ -12,6 +12,10 @@ export interface EndWorkPending {
   title: string;
   model: string;
   session: string;
+  /** Busy background agents: 0 = END OF WORK, >0 = END OF TASK */
+  running_agents: number;
+  /** Root session id the count was taken for (recount without title guessing) */
+  root_id: string;
   dismissed: boolean;
   answer?: string;
 }
@@ -46,10 +50,13 @@ export function postEndWork(input: {
   title?: string;
   model?: string;
   session?: string;
+  running?: number;
+  root_id?: string;
 }): EndWorkPending {
   const title = String(input.title ?? "").slice(0, MAX_TITLE) || "work";
   const model = String(input.model ?? "").slice(0, MAX_MODEL);
   const session = String(input.session ?? "").slice(0, MAX_TITLE);
+  const running = Math.max(0, Math.min(99, Math.floor(Number(input.running) || 0)));
   const now = Math.floor(Date.now() / 1000);
   const entry: EndWorkPending = {
     id: eid(),
@@ -58,6 +65,8 @@ export function postEndWork(input: {
     title,
     model,
     session,
+    running_agents: running,
+    root_id: String(input.root_id ?? "").slice(0, 40),
     dismissed: false,
   };
   current = entry;
@@ -68,6 +77,15 @@ export function postEndWork(input: {
 export function getPending(): EndWorkPending | null {
   if (!current) return null;
   if (current.dismissed) return null;
+  return current;
+}
+
+/** In-place recount for the latched slot (no re-pop, no new id). */
+export function setRunningAgents(n: number): EndWorkPending | null {
+  if (!current || current.dismissed) return null;
+  const v = Math.max(0, Math.min(99, Math.floor(Number(n) || 0)));
+  if (current.running_agents === v) return current;
+  current.running_agents = v;
   return current;
 }
 

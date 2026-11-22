@@ -195,6 +195,7 @@ export function startHttpServer(opts: HttpOptions): Server {
           title?: string;
           model?: string;
           session?: string;
+          running?: number;
         };
         if (!input || typeof input.title !== "string") {
           send(res, 400, { error: "bad_request", detail: "need {title: string}" });

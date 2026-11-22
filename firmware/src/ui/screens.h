@@ -9,6 +9,8 @@ void drawProviders(const QuotaState &q, bool netUp, bool serialMode);
 void drawScope(const QuotaState &q, bool netUp, bool serialMode);
 void drawClock(const QuotaState &q, bool netUp, bool serialMode);
 void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode);
-// END - WORK latch: hero blinks TEXT white <-> ICE blue each poll (blinkBlue).
-// CYD only (TV154 never enters SCR_ENDWORK).
+// END latch: WORK hero blinks TEXT white <-> ICE blue each poll (blinkBlue);
+// TASK (agents still running) holds solid ICE so the two states differ at a
+// glance. Shared by CYD (320) and TV154 (240); TASK subline is part of the
+// centered block (see drawEndWork).
 void drawEndWork(const QuotaState &q, bool netUp, bool serialMode, bool blinkBlue);
