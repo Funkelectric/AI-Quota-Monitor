@@ -100,6 +100,14 @@ from the PiBiatch and flashes the TV-154):
 curl -fsSL http://192.168.1.59:8000/ew.tgz | tar -xz -C ~ && cd ~/firmware && PORT=/dev/ttyUSB0 bash flash-cyd.sh tv154-st7789
 ```
 
+CYD 2.8" (this task — copy-paste, no edits needed):
+
+```bash
+curl -fsSL http://192.168.1.59:8000/ew.tgz | tar -xz -C ~ && cd ~/firmware && PORT=/dev/ttyUSB0 bash flash-cyd.sh cyd-st7789
+# white/inverted CYD screen -> same line with cyd-ili9341:
+curl -fsSL http://192.168.1.59:8000/ew.tgz | tar -xz -C ~ && cd ~/firmware && PORT=/dev/ttyUSB0 bash flash-cyd.sh cyd-ili9341
+```
+
 `sudo chmod 666 /dev/ttyUSB0` fixes permission errors; swap `tv154-st7789`
 for `cyd-st7789` (or `cyd-ili9341` for white/inverted CYD) for the 2.8" board.
 PlatformIO is required in the Chromebook Linux container once:

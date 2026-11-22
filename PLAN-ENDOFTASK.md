@@ -217,14 +217,19 @@ mockups regenerated; `FW_VERSION` `v0.2` → `v0.3`, bridge `0.1.0` →
 (`1 agent still running`, the flash file server) → server stopped →
 recount to 0 → re-fire as WORK. Correct.
 
-## 9. Next (CYD-320, tomorrow)
+## 9. Next (CYD-320 — DONE 2026-11-22)
 
-1. Bridge: `running` count + store field + 2 embed sites + POST passthrough.
+1. Bridge: `running` count + store field + 2 embed sites + POST passthrough. ✅ Done.
 2. `types.ts` comment/Budget update + bridge unit test (idle root + N busy children →
-   TASK; 0 → WORK; recount-to-zero re-fires).
-3. Firmware: struct field + parse line + hero conditional + subline + stale-comment fix.
-4. ~~Regenerate TV mockups + add CYD-320 TASK mock before merging firmware.~~ TV done; **CYD-320 TASK mock still pending (tomorrow).**
-5. ~~On-device check.~~ Done: TASK→WORK flip verified live (see §8).
+   TASK; 0 → WORK; recount-to-zero re-fires). ✅ Done (inspection; `node_modules` absent).
+3. Firmware: struct field + parse line + hero conditional + subline + stale-comment fix. ✅ Done, shared CYD+TV154.
+4. ~~Regenerate TV mockups + add CYD-320 TASK mock before merging firmware.~~ ✅ Both done:
+   TV (`mockup-tv154-endotask-*.png`) + CYD-320 (`mock_cyd_endotask_render.py` →
+   `mockup-cyd-endotask-ice.png` reference / `-white.png` alt / `-endotask.png` combo,
+   hero 211/292, sub 139/292, block-center 142, header gap 108).
+5. ~~On-device check.~~ ✅ Done: TASK→WORK flip verified live (see §8); CYD-320 flashed
+   from Chromebook via LAN tarball (`cyd-st7789` → white panel → `cyd-ili9341` correct,
+   `RAM 17.1% / Flash 35.6%`). Stable one-liners documented in `README.md` Install §2.
 
 ---
 *Sources: @esp32-expert feasibility (bridge counting query, payload +1 B SRAM deltas,
