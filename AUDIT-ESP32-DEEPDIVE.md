@@ -1,5 +1,13 @@
 # ESP32-2432S028R (CYD) Deep-Dive Audit — firmware + bridge
 
+> **Addendum 2026-11-24 (v0.4):** the 5 critical gaps above are now closed —
+> Wi-Fi reconnect latch + zombie-link watchdog (`QUOTA_FAIL_RECONNECT/RESTART`,
+> freshness-driven OFFLINE UI), bridge-latency vs firmware-timeout (background
+> cache refresh, ~0 ms HTTP), ASK id-width (`ASK_ID_MAX=31` both sides),
+> Serial ASK path (push envelope + auto-popup), flicker/blocking (staggered
+> quota/ask, deferred answer POST). This audit's findings are historical;
+> current behavior is in `README.md` + `CHANGELOG.md` `[0.4.0]`.
+
 Date: 2026-11-19 · Branch: `audit/esp32-deepdive` · Scope: read-only audit, no code changed.
 Tree audited: `firmware/` (PlatformIO, TFT_eSPI, XPT2046, ArduinoJson v7, WiFiManager),
 `bridge/` (Node 22, native http, `node:sqlite`, serialport), `mock_hw_render.py`,

@@ -1,0 +1,13 @@
+[Unit]
+Description=LAN tarball server for Chromebook flashing (ew.tgz)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m http.server 8000 --directory %h/.local/share/ai-quota-bridge/www
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

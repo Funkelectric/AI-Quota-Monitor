@@ -20,7 +20,62 @@ export interface EndWorkPending {
   answer?: string;
 }
 
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Disk persistence: the latch must survive a bridge restart (service
+ * update, Pi reboot), otherwise a not-yet-dismissed END OF WORK event is
+ * silently lost. Single JSON file, written on every mutation.
+ */
+function stateFile(): string {
+  const fromEnv = (process.env.ENDWORK_STATE_FILE ?? "").trim();
+  if (fromEnv) return fromEnv;
+  return join(homedir(), ".local", "share", "ai-quota-bridge", "endwork.json");
+}
+
+function save(): void {
+  try {
+    const f = stateFile();
+    if (!current) {
+      if (existsSync(f)) unlinkSync(f);
+      return;
+    }
+    mkdirSync(join(f, ".."), { recursive: true });
+    writeFileSync(f, JSON.stringify(current), "utf8");
+  } catch {
+    // persistence is best-effort; the in-memory latch still works
+  }
+}
+
+function load(): void {
+  try {
+    const f = stateFile();
+    if (!existsSync(f)) return;
+    const raw = JSON.parse(readFileSync(f, "utf8")) as Partial<EndWorkPending>;
+    if (!raw || typeof raw.id !== "string" || !raw.id || raw.dismissed) return;
+    if (typeof raw.title !== "string") return;
+    current = {
+      id: raw.id.slice(0, 31),
+      ts: Math.floor(Number(raw.ts) || 0),
+      ended_at: Math.floor(Number(raw.ended_at) || 0),
+      title: String(raw.title).slice(0, 23),
+      model: String(raw.model ?? "").slice(0, 31),
+      session: String(raw.session ?? "").slice(0, 23),
+      running_agents: Math.max(0, Math.min(99, Math.floor(Number(raw.running_agents) || 0))),
+      root_id: String(raw.root_id ?? "").slice(0, 40),
+      dismissed: false,
+      answer: undefined,
+    };
+  } catch {
+    // corrupt file: start empty
+  }
+}
+
 let current: EndWorkPending | null = null;
+
+load();
 
 const resolved = new Map<string, { entry: EndWorkPending; at: number }>();
 
@@ -70,6 +125,7 @@ export function postEndWork(input: {
     dismissed: false,
   };
   current = entry;
+  save();
   return entry;
 }
 
@@ -86,6 +142,7 @@ export function setRunningAgents(n: number): EndWorkPending | null {
   const v = Math.max(0, Math.min(99, Math.floor(Number(n) || 0)));
   if (current.running_agents === v) return current;
   current.running_agents = v;
+  save();
   return current;
 }
 
@@ -102,6 +159,7 @@ export function dismissEndWork(id: string): EndWorkPending | null {
   const done = { ...p };
   remember(done);
   current = null;
+  save();
   return done;
 }
 

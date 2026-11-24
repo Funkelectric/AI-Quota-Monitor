@@ -300,11 +300,14 @@ cat > include/config.h <<'EOF_CFG'
 #define SCR_CLOCK     3
 #define SCR_ASK       4
 #ifdef TV154
-// TV-154 port scope: 01 QUOTA + 02 WINDOWS only (240x240, single button).
-#define SCR_COUNT     2
+// TV-154 scope: 01 QUOTA + 02 WINDOWS + END - WORK latch (no ASK screen,
+// single top key dismisses the latch).
+#define SCR_ENDWORK   2
+#define SCR_COUNT     3
 #define HAS_XPT2046   0
 #else
-#define SCR_COUNT     5
+#define SCR_ENDWORK   5
+#define SCR_COUNT     6
 #define HAS_XPT2046   1
 #endif
 
@@ -331,7 +334,7 @@ cat > include/config.h <<'EOF_CFG'
 #define BUTTON_LONG_MS 5000
 
 // Firmware version shown in the readout strip (VER field), both hardware.
-#define FW_VERSION "v0.1"
+#define FW_VERSION "v0.4"
 
 // Compact payload guard: ESP32 parses this on the stack.
 #define QUOTA_JSON_MAX 2048
@@ -354,10 +357,30 @@ cat > include/config.h <<'EOF_CFG'
 #define ASK_ID_MAX 31
 #define ASK_POLL_SEC 5
 
+// END latch screen: event embedded in the quota payload
+// ("endofwork": {id, title, model, ended_at, running}). running==0 shows
+// END OF WORK (fully done); running>0 shows END OF TASK + "N agents still
+// running" (conversation back, background agents running). No extra poll —
+// quota poll + USB-serial quota frames carry it. Touch dismisses locally
+// and POSTs /api/endofwork/dismiss to clear the bridge slot.
+#define ENDWORK_ID_MAX 31
+#define ENDWORK_TITLE_MAX 23
+#define ENDWORK_MODEL_MAX 31
+
 // WiFi reconnect: non-blocking re-associate attempt every 30s when offline.
 // Fixes C1 (drop latched offline forever). NTP re-synced on regain.
 #define WIFI_RECONNECT_SEC 30
 #define WIFI_RECONNECT_MS (WIFI_RECONNECT_SEC * 1000UL)
+
+// Link watchdog: WL_CONNECTED can lie (zombie DHCP/ARP/gateway lease or a
+// wedged radio — SYNC badges keep flashing while no byte gets through).
+// Consecutive failed quota polls force a radio reconnect, then a reboot:
+// a wall display must self-heal. Counted in main.cpp pollNow(), WiFi path.
+#define QUOTA_FAIL_RECONNECT 4
+#define QUOTA_FAIL_RESTART 12
+// Data staleness: last successful quota older than this shows OFFLINE
+// (LED + readout badge) even while WL_CONNECTED. ~4x the 15s default poll.
+#define QUOTA_STALE_MS 60000UL
 
 // Backlight: EMA + deadband + fast slew (fixes H5 slow 107s swing).
 #define BL_EMA_N 4
@@ -451,6 +474,9 @@ bool netFetchAsk(const NetConfig &cfg, struct AskState &out);
 /** POST http://host:port/api/ask/answer {id, option_id}. True on 200. */
 bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id);
 
+/** POST http://host:port/api/endofwork/dismiss {id}. True on 200. */
+bool netPostEndDismiss(const NetConfig &cfg, const char *id);
+
 /**
  * Non-blocking WiFi maintenance (AUDIT C1 / P0-1).
  * Call every loop(): when offline, attempts WiFi.reconnect() at most every
@@ -492,6 +518,16 @@ struct QuotaState {
   bool oc_stale;
   SessionState sessions[SESSIONS_MAX];
   uint8_t session_count;
+
+  // Latched END OF WORK / END OF TASK event (bridge /api/endofwork, embedded in quota).
+  // running == 0 -> END OF WORK (fully done); running > 0 -> END OF TASK
+  // (conversation back with N background agents still running).
+  bool has_endwork;
+  char endwork_id[ENDWORK_ID_MAX + 1];
+  char endwork_title[ENDWORK_TITLE_MAX + 1];
+  char endwork_model[ENDWORK_MODEL_MAX + 1];
+  long endwork_ts;
+  uint8_t endwork_running;
 
   uint8_t overall;  // ST_OK / ST_WARN / ST_CRIT / ST_OFFLINE
   unsigned long updated_ms;
@@ -631,6 +667,11 @@ void drawProviders(const QuotaState &q, bool netUp, bool serialMode);
 void drawScope(const QuotaState &q, bool netUp, bool serialMode);
 void drawClock(const QuotaState &q, bool netUp, bool serialMode);
 void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode);
+// END latch: WORK hero blinks TEXT white <-> ICE blue each poll (blinkBlue);
+// TASK (agents still running) holds solid ICE so the two states differ at a
+// glance. Shared by CYD (320) and TV154 (240); TASK subline is part of the
+// centered block (see drawEndWork).
+void drawEndWork(const QuotaState &q, bool netUp, bool serialMode, bool blinkBlue);
 EOF_SCRH
 
 cat > src/quota_state.cpp <<'EOF_QS'
@@ -747,6 +788,32 @@ bool parseQuotaPayload(const char *json, size_t len, QuotaState &out) {
     uint8_t worst = ST_OK;
     for (uint8_t i = 0; i < next.oc_count; i++) worst = max(worst, next.oc[i].status);
     next.overall = worst;
+  }
+
+  // END OF WORK / END OF TASK latch (bridge embeds "endofwork":
+  // {id,title,model,ended_at,running}). running==0 -> WORK, >0 -> TASK.
+  // Missing/null -> no event. Compact enough to stay inside QUOTA_JSON_MAX.
+  next.has_endwork = false;
+  next.endwork_id[0] = '\0';
+  next.endwork_title[0] = '\0';
+  next.endwork_model[0] = '\0';
+  next.endwork_ts = 0;
+  next.endwork_running = 0;
+  JsonVariant ew = g_doc["endofwork"];
+  if (!ew.isNull() && ew.is<JsonObject>()) {
+    JsonObject eo = ew.as<JsonObject>();
+    const char *eid = eo["id"] | "";
+    if (strlen(eid) > 0) {
+      copyName(next.endwork_id, sizeof(next.endwork_id), eid);
+      copyName(next.endwork_title, sizeof(next.endwork_title), eo["title"] | "?");
+      copyName(next.endwork_model, sizeof(next.endwork_model), eo["model"] | "");
+      next.endwork_ts = eo["ended_at"] | 0L;
+      int run = eo["running"] | 0;
+      if (run < 0) run = 0;
+      if (run > 99) run = 99;
+      next.endwork_running = (uint8_t)run;
+      next.has_endwork = true;
+    }
   }
 
   next.fresh = true;
@@ -1110,6 +1177,27 @@ bool netPostAnswer(const NetConfig &cfg, const char *id, const char *option_id) 
   http.end();
   return code == 200;
 }
+
+bool netPostEndDismiss(const NetConfig &cfg, const char *id) {
+  if (WiFi.status() != WL_CONNECTED || !id) return false;
+  char url[128];
+  snprintf(url, sizeof(url), "http://%s:%u/api/endofwork/dismiss", cfg.host, cfg.port);
+
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(url)) return false;
+  http.addHeader("Content-Type", "application/json");
+  if (s_token[0]) {
+    char auth[80];
+    snprintf(auth, sizeof(auth), "Bearer %.64s", s_token);
+    http.addHeader("Authorization", auth);
+  }
+  char body[64];
+  snprintf(body, sizeof(body), "{\"id\":\"%.31s\"}", id);
+  int code = http.POST((uint8_t *)body, strlen(body));
+  http.end();
+  return code == 200;
+}
 EOF_NET
 
 cat > src/ui/display.cpp <<'EOF_DISP'
@@ -1228,12 +1316,14 @@ static const char *screenSection(uint8_t scr) {
     // 240px: "02 - PROVIDERS" (130px spaced) collides with the clock cluster;
     // "02 - WINDOWS" (114px) keeps an 8px gap (see mock_tv154_render.py audit).
     case SCR_PROVIDERS: return "02 - WINDOWS";
+    case SCR_ENDWORK: return "END - WORK";
 #else
     case SCR_PROVIDERS: return "02 - PROVIDERS";
-#endif
     case SCR_SCOPE: return "03 - SCOPE";
     case SCR_CLOCK: return "04 - STANDBY";
     case SCR_ASK: return "05 - ASK";
+    case SCR_ENDWORK: return "END - WORK";
+#endif
     default: return "01 - QUOTA";
   }
 }
@@ -1266,7 +1356,10 @@ static void header(const QuotaState &q, bool netUp, bool serialMode) {
   t.setTextSize(1);
   t.setTextDatum(TL_DATUM);
   t.fillRect(0, 0, LAYOUT_W, HEADER_H, COLOR_CARD);
-  spaced(screenSection(g_screen), 10, 6, COLOR_DIM, COLOR_CARD);
+  const char *sec = screenSection(g_screen);
+  // END latch splits: TASK header when agents are still running, WORK when done.
+  if (g_screen == SCR_ENDWORK && q.has_endwork && q.endwork_running > 0) sec = "END - TASK";
+  spaced(sec, 10, 6, COLOR_DIM, COLOR_CARD);
 
   uint16_t dot;
   const char *live;
@@ -1879,6 +1972,109 @@ void drawAsk(const AskState &a, const QuotaState &q, bool netUp, bool serialMode
   }
   tiny("TAP TO ANSWER - BOOT = NEXT", 86, 226, COLOR_DIM, COLOR_BG);
 }
+
+// ---- END latch: WORK (done) vs TASK (agents still running) ----
+// Geometry mirrors mock_endofwork_render.py / mock_tv154_endotask_render.py:
+//   header 0..28, tiny label y=38, title y=50, sub y=68, hairline y=88,
+//   hero+sub block centered in 88..196 (center y=142), button (8,196,bw,32).
+// WORK: single "END OF WORK" hero, blinks TEXT white <-> ICE blue on each
+// poll (blinkBlue). TASK: "END OF TASK" hero (solid ICE) + "N agents still
+// running" subline below it; the pair is centered as one block so the gaps
+// above (hairline) and below (button) match. Any tap dismisses (main.cpp);
+// this screen never auto-exits.
+void drawEndWork(const QuotaState &q, bool netUp, bool serialMode, bool blinkBlue) {
+  TFT_eSPI &t = display();
+  t.fillScreen(COLOR_BG);
+  t.setTextSize(1);
+  t.setTextDatum(TL_DATUM);
+  header(q, netUp, serialMode);
+
+  const bool isTask = q.has_endwork && q.endwork_running > 0;
+  const char *tinyLabel = isTask ? "ENDED TASK" : "ENDED WORK";
+  const char *heroText = isTask ? "END OF TASK" : "END OF WORK";
+
+  t.setTextFont(1);
+  tiny(tinyLabel, (LAYOUT_W - (int)t.textWidth(tinyLabel)) / 2, 38, COLOR_DIM, COLOR_BG);
+
+  char title[ENDWORK_TITLE_MAX + 1];
+  strncpy(title, q.has_endwork && q.endwork_title[0] ? q.endwork_title : "--", sizeof(title) - 1);
+  title[sizeof(title) - 1] = '\0';
+  t.setTextFont(2);
+  while (strlen(title) > 1 && t.textWidth(title) > LAYOUT_W - 28) title[strlen(title) - 1] = '\0';
+  t.setTextColor(COLOR_TEXT, COLOR_BG);
+  t.setCursor((LAYOUT_W - t.textWidth(title)) / 2, 50);
+  t.print(title);
+
+  char sub[ENDWORK_MODEL_MAX + 1];
+  strncpy(sub, q.has_endwork ? q.endwork_model : "", sizeof(sub) - 1);
+  sub[sizeof(sub) - 1] = '\0';
+  t.setTextFont(2);
+  while (strlen(sub) > 1 && t.textWidth(sub) > LAYOUT_W - 28) sub[strlen(sub) - 1] = '\0';
+  t.setTextColor(COLOR_DIM, COLOR_BG);
+  if (sub[0]) {
+    t.setCursor((LAYOUT_W - t.textWidth(sub)) / 2, 68);
+    t.print(sub);
+  }
+
+  t.drawFastHLine(13, 88, LAYOUT_W - 26, COLOR_EDGE);
+
+  // Hero: single line, vertically centered in the 88..196 zone
+  // (center y=142). Font 6 draws digits but not letters on ILI9341
+  // panel builds, so font 2 is used: size 3 when it fits, else size 2.
+  // print() with manual centering, the most proven path on-device.
+  // Budget + button derive from LAYOUT_W so CYD (320) and TV154 (240)
+  // share this function. TASK hero holds solid ICE; WORK blinks.
+  const int budget = LAYOUT_W - 28;
+  uint16_t hero = isTask ? COLOR_ICE : (blinkBlue ? COLOR_ICE : COLOR_TEXT);
+  t.setTextFont(2);
+  t.setTextSize(3);
+  t.setTextColor(hero, COLOR_BG);
+  int hw = t.textWidth(heroText);
+  uint8_t hs = 3;
+  if (hw > budget) { hs = 2; t.setTextSize(2); hw = t.textWidth(heroText); }
+  const int heroH = 16 * hs;
+  int heroY, subY = -1;
+  if (isTask) {
+    // Center the hero+sub pair as one block: block = hero + 10 gap + 16 sub.
+    const int block = heroH + 10 + 16;
+    heroY = 142 - block / 2;
+    subY = heroY + heroH + 10;
+  } else {
+    heroY = 142 - 8 * hs;
+  }
+  t.setCursor((LAYOUT_W - hw) / 2, heroY);
+  t.print(heroText);
+  t.setTextSize(1);
+
+  // TASK subline: "N agent(s) still running", font-2 DIM, part of the block.
+  if (isTask) {
+    char agents[32];
+    uint8_t n = q.endwork_running;
+    snprintf(agents, sizeof(agents), "%u agent%s still running", n, n == 1 ? "" : "s");
+    t.setTextFont(2);
+    while (strlen(agents) > 1 && t.textWidth(agents) > budget) agents[strlen(agents) - 1] = '\0';
+    t.setTextColor(COLOR_DIM, COLOR_BG);
+    t.setCursor((LAYOUT_W - t.textWidth(agents)) / 2, subY);
+    t.print(agents);
+  }
+
+  // Dismiss hint: full-width bar. CYD: any screen tap dismisses; TV154 (no
+  // XY touch): the top key dismisses (see buttonTick). WORK outline pulses
+  // with the hero (same phase); TASK holds solid ICE.
+  uint16_t frame = isTask ? COLOR_ICE : (blinkBlue ? COLOR_ICE : COLOR_EDGE);
+  const int bw = LAYOUT_W - 16;
+  t.drawRoundRect(8, 196, bw, 32, 3, frame);
+  t.fillRoundRect(9, 197, bw - 2, 30, 2, COLOR_CARD);
+#ifdef TV154
+  const char *hint = "TOUCH TOP TO DISMISS";
+#else
+  const char *hint = "TOUCH SCREEN TO DISMISS";
+#endif
+  t.setTextFont(2);
+  t.setTextColor(COLOR_DIM, COLOR_CARD);
+  t.setCursor((LAYOUT_W - t.textWidth(hint)) / 2, 196 + (32 - 16) / 2);
+  t.print(hint);
+}
 EOF_SCR
 
 cat > src/main.cpp <<'EOF_MAIN'
@@ -1917,6 +2113,41 @@ static bool g_hasAnswer = false;
 static char g_answerId[ASK_ID_MAX + 1];
 static char g_answerOpt[ASK_ID_MAX + 1];
 
+// Link watchdog (zombie-link self-heal): last successful quota stamp +
+// consecutive-failure count. WL_CONNECTED alone is not trusted — data
+// freshness is the real signal (see QUOTA_FAIL_*/QUOTA_STALE_MS).
+static unsigned long g_lastQuotaOk = 0;
+static bool g_quotaOkOnce = false;
+static uint8_t g_quotaFails = 0;
+
+/** Any quota source (WiFi poll or USB-serial push) succeeded recently. */
+static bool quotaFresh() {
+  return g_quotaOkOnce && (millis() - g_lastQuotaOk < QUOTA_STALE_MS);
+}
+
+/** Effective link: fresh data AND (cable push OR radio up). */
+static bool linkUp() { return quotaFresh() && (g_serialMode || netIsConnected()); }
+
+/** Stamp a successful quota update (WiFi or serial). Resets the watchdog. */
+static void quotaOkStamp() {
+  g_lastQuotaOk = millis();
+  g_quotaOkOnce = true;
+  g_quotaFails = 0;
+}
+
+// END - WORK latch: hero blink phase + dismissed id (touch clears locally,
+// deferred POST clears the bridge slot). Stays until ANY screen touch.
+static bool g_endBlink = false;
+static char g_endDismissed[ENDWORK_ID_MAX + 1] = "";
+static bool g_hasEndDismiss = false;
+static char g_endDismissId[ENDWORK_ID_MAX + 1] = "";
+
+// True when a live (not yet dismissed) END OF WORK event is held.
+static bool endWorkActive() {
+  return g_state.has_endwork && g_state.endwork_id[0] &&
+         strcmp(g_state.endwork_id, g_endDismissed) != 0;
+}
+
 // BOOT button (GPIO0, active LOW).
 static bool s_btnDown = false;
 static unsigned long s_btnMs = 0;
@@ -1928,16 +2159,19 @@ static char s_line[QUOTA_JSON_MAX + 1];
 static size_t s_lineLen = 0;
 
 static void render() {
-  bool netUp = netIsConnected();
+  bool netUp = linkUp();
 #ifdef TV154
   // 01+02 only; any stray ASK/other id falls back to overview.
   if (g_screen >= SCR_COUNT) g_screen = SCR_OVERVIEW;
 #endif
   switch (g_screen) {
     case SCR_PROVIDERS: drawProviders(g_state, netUp, g_serialMode); break;
+#ifndef TV154
     case SCR_SCOPE: drawScope(g_state, netUp, g_serialMode); break;
     case SCR_CLOCK: drawClock(g_state, netUp, g_serialMode); break;
     case SCR_ASK: drawAsk(g_ask, g_state, netUp, g_serialMode); break;
+#endif
+    case SCR_ENDWORK: drawEndWork(g_state, netUp, g_serialMode, g_endBlink); break;
     default: drawOverview(g_state, netUp, g_serialMode); break;
   }
   g_lastRender = millis();
@@ -1959,14 +2193,17 @@ static void skipAskIfEmpty(uint8_t &scr) {
   if (scr >= SCR_COUNT) scr = SCR_OVERVIEW;
 #else
   if (scr == SCR_ASK && !g_ask.pending) scr = SCR_OVERVIEW;
+  if (scr == SCR_ENDWORK && !endWorkActive()) scr = SCR_OVERVIEW;
 #endif
 }
 
 static void nextScreen() {
   // AUDIT H8: never land on ASK with nothing pending (both directions).
+  // Same for ENDWORK: only land via latch, never via cycling.
   for (uint8_t i = 0; i < SCR_COUNT; i++) {
     g_screen = (g_screen + 1) % SCR_COUNT;
     if (g_screen == SCR_ASK && !g_ask.pending) continue;
+    if (g_screen == SCR_ENDWORK && !endWorkActive()) continue;
     break;
   }
   render();
@@ -1976,6 +2213,7 @@ static void prevScreen() {
   for (uint8_t i = 0; i < SCR_COUNT; i++) {
     g_screen = (g_screen + SCR_COUNT - 1) % SCR_COUNT;
     if (g_screen == SCR_ASK && !g_ask.pending) continue;
+    if (g_screen == SCR_ENDWORK && !endWorkActive()) continue;
     break;
   }
   render();
@@ -1988,7 +2226,34 @@ static void pollNow() {
   if (netFetchQuota(g_cfg, next)) {
     g_state = next;
     g_serialMode = false;
+    quotaOkStamp();
+    // END - WORK latch: new (not dismissed) event pops the screen and each
+    // poll toggles the hero blink so the change is clearly visible.
+    if (endWorkActive()) {
+      g_endBlink = !g_endBlink;
+      if (g_screen != SCR_ENDWORK) {
+        g_screen = SCR_ENDWORK;
+        Serial.printf("endwork latch id=%s blink=%d\n", g_state.endwork_id, (int)g_endBlink);
+      }
+    } else if (g_screen == SCR_ENDWORK) {
+      g_screen = SCR_OVERVIEW;
+    }
     render();
+  } else if (!g_serialMode) {
+    // L7 watchdog: WL_CONNECTED lies on zombie links (dead DHCP/ARP/gateway
+    // or wedged radio) — SYNC would flash forever on stale data. Count
+    // consecutive failures: reconnect the radio first, reboot as last resort.
+    if (g_quotaFails < 255) g_quotaFails++;
+    if (g_quotaFails >= QUOTA_FAIL_RESTART) {
+      Serial.printf("link watchdog: %u quota fails, rebooting\n", (unsigned)g_quotaFails);
+      delay(200);
+      ESP.restart();
+    } else if (g_quotaFails == QUOTA_FAIL_RECONNECT) {
+      Serial.printf("link watchdog: %u quota fails, reconnecting WiFi\n", (unsigned)g_quotaFails);
+      WiFi.disconnect(false, false);
+      WiFi.reconnect();
+    }
+    render();  // refresh the OFFLINE/stale indicator promptly
   }
   g_lastPoll = millis();
 }
@@ -2043,6 +2308,13 @@ static void handleSerialLine() {
   if (parseQuotaPayload(s_line, s_lineLen, next)) {
     g_state = next;
     g_serialMode = true;
+    quotaOkStamp();
+    if (endWorkActive()) {
+      g_endBlink = !g_endBlink;
+      if (g_screen != SCR_ENDWORK) g_screen = SCR_ENDWORK;
+    } else if (g_screen == SCR_ENDWORK) {
+      g_screen = SCR_OVERVIEW;
+    }
     render();
   }
 }
@@ -2087,7 +2359,19 @@ static void buttonTick() {
     g_lastAskPoll = 0;
     ESP.restart();
   } else if (!down && s_tDown) {
-    if (!s_tLong && (now - s_tMs > 50)) nextScreen();
+    // ENDWORK latches until dismissed: top-key tap dismisses locally and
+    // clears the bridge slot (TV has no XY touch). Hold-to-wipe unaffected.
+    if (!s_tLong && (now - s_tMs > 50)) {
+      if (g_screen == SCR_ENDWORK && endWorkActive()) {
+        strncpy(g_endDismissed, g_state.endwork_id, sizeof(g_endDismissed) - 1);
+        g_endDismissed[sizeof(g_endDismissed) - 1] = '\0';
+        strncpy(g_endDismissId, g_state.endwork_id, sizeof(g_endDismissId) - 1);
+        g_endDismissId[sizeof(g_endDismissId) - 1] = '\0';
+        g_hasEndDismiss = true;
+        g_screen = SCR_OVERVIEW;
+        render();
+      } else nextScreen();
+    }
     s_tDown = false;
   }
 #else
@@ -2122,8 +2406,9 @@ static void buttonTick() {
     }
   } else if (!down && s_btnDown) {
     // AUDIT H4: ~50ms debounce guard; contact bounce skips screens.
+    // ENDWORK latches until SCREEN touch - BOOT taps never exit it.
     if (!s_longFired && (now - s_btnMs > 50) && (now - s_lastReleaseMs > 50)) {
-      nextScreen();
+      if (g_screen != SCR_ENDWORK) nextScreen();
       s_lastReleaseMs = now;
     }
     s_btnDown = false;
@@ -2177,15 +2462,18 @@ static void pollAskNow() {
   // TV-154 01+02 port: keep quota state fresh, never leave 01/02 for ASK.
   skipAskIfEmpty(g_screen);
 #else
+  // ASK is time-sensitive: a NEW question pops even over a latched ENDWORK.
   if (next.pending && (!wasPending || strcmp(next.id, wasId) != 0)) {
     g_screen = SCR_ASK;  // auto-popup on new question
     render();
   } else if (!next.pending && wasPending && g_screen == SCR_ASK) {
-    g_screen = SCR_OVERVIEW;  // answered / timed out elsewhere
+    // answered / timed out elsewhere: fall back to ENDWORK while live.
+    g_screen = endWorkActive() ? SCR_ENDWORK : SCR_OVERVIEW;
     render();
   } else if (next.pending && g_screen == SCR_ASK) {
     render();
   }
+  if (g_screen == SCR_ASK && !g_ask.pending && endWorkActive()) g_screen = SCR_ENDWORK;
   skipAskIfEmpty(g_screen);
 #endif
 }
@@ -2234,14 +2522,25 @@ void loop() {
   if (g_ask.pending && millis() > g_ask.expires_ms) {
     g_ask.pending = false;
     if (g_screen == SCR_ASK) {
-      g_screen = SCR_OVERVIEW;
+      g_screen = endWorkActive() ? SCR_ENDWORK : SCR_OVERVIEW;
       render();
     }
   }
 
   uint16_t tx, ty;
   if (touchTap(tx, ty)) {
-    if (g_screen == SCR_ASK && g_ask.pending) {
+    if (g_screen == SCR_ENDWORK) {
+      // Latched until touch: any tap dismisses locally + clears bridge.
+      if (g_state.has_endwork && g_state.endwork_id[0]) {
+        strncpy(g_endDismissed, g_state.endwork_id, sizeof(g_endDismissed) - 1);
+        g_endDismissed[sizeof(g_endDismissed) - 1] = '\0';
+        strncpy(g_endDismissId, g_state.endwork_id, sizeof(g_endDismissId) - 1);
+        g_endDismissId[sizeof(g_endDismissId) - 1] = '\0';
+        g_hasEndDismiss = true;
+      }
+      g_screen = SCR_OVERVIEW;
+      render();
+    } else if (g_screen == SCR_ASK && g_ask.pending) {
       if (ty < HEADER_H) {
         g_forceAsk = true;  // top bar tap: force refresh (deferred, not blocking)
       } else {
@@ -2274,7 +2573,7 @@ void loop() {
     syncBadge("SEND");
     if (netPostAnswer(g_cfg, g_answerId, g_answerOpt)) {
       g_ask.pending = false;
-      g_screen = SCR_OVERVIEW;
+      g_screen = endWorkActive() ? SCR_ENDWORK : SCR_OVERVIEW;
       render();
     } else {
       // Transport failure: re-render so the SEND badge clears, keep pending.
@@ -2284,6 +2583,23 @@ void loop() {
     // Serial mode has no answer uplink yet (bridge serial is push-only);
     // drop the queue to avoid a stuck SEND badge.
     g_hasAnswer = false;
+    if (g_screen == SCR_ASK) g_screen = endWorkActive() ? SCR_ENDWORK : SCR_OVERVIEW;
+    render();
+  }
+
+  // Deferred ENDWORK dismiss: clear the bridge slot so the next poll (or
+  // another CYD) does not re-latch. Local screen already dismissed.
+  if (g_hasEndDismiss && netIsConnected() && !g_serialMode) {
+    g_hasEndDismiss = false;
+    syncBadge("SEND");
+    if (netPostEndDismiss(g_cfg, g_endDismissId)) {
+      render();
+    } else {
+      render();
+    }
+  } else if (g_hasEndDismiss && g_serialMode) {
+    // Serial mode is push-only: drop the queue, local dismiss stands.
+    g_hasEndDismiss = false;
     render();
   }
 
@@ -2314,7 +2630,11 @@ void loop() {
   // data/screen change to cut fillScreen flicker. Keep 10s for clock, 30s
   // otherwise (countdowns are minute-granularity except sub-2min seconds).
   unsigned long tickMs = (g_screen == SCR_CLOCK) ? 10000UL : 30000UL;
-  if (now - g_lastRender > tickMs) render();
+  if (g_screen == SCR_ENDWORK) tickMs = 2000UL;
+  if (now - g_lastRender > tickMs) {
+    if (g_screen == SCR_ENDWORK && endWorkActive()) g_endBlink = !g_endBlink;
+    render();
+  }
 
   if (now - g_lastBl > 500) {
     g_lastBl = now;
@@ -2323,10 +2643,11 @@ void loop() {
 
   if (now - g_lastHeapLog > 60000) {
     g_lastHeapLog = now;
-    Serial.printf("heap=%u screen=%u pending=%d\n", (unsigned)ESP.getFreeHeap(), g_screen, (int)g_ask.pending);
+    Serial.printf("heap=%u screen=%u pending=%d fails=%u link=%d\n", (unsigned)ESP.getFreeHeap(), g_screen, (int)g_ask.pending,
+                (unsigned)g_quotaFails, (int)linkUp());
   }
 
-  ledTick(g_state.fresh ? g_state.overall : ST_OFFLINE);
+  ledTick(linkUp() ? g_state.overall : ST_OFFLINE);
   delay(20);
 }
 EOF_MAIN

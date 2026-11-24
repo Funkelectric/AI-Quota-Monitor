@@ -201,7 +201,7 @@ cyd-quota-monitor/
 - [ ] **Verification**: Flash to NM-CYD, connect to mock bridge, verify all 4 screens, touch cycling, RGB LED color transitions, and graceful offline handling.
 
 ### Phase 5: Polish & Auto-Start
-- [ ] Add OS background service templates in `bridge/scripts/` (`launchd` plist for macOS, `systemd` user unit for Linux, PowerShell/Task Scheduler script for Windows) so the Quota Bridge starts automatically on login.
+- [x] Add OS background service templates in `bridge/scripts/` (`launchd` plist for macOS, `systemd` user unit for Linux, PowerShell/Task Scheduler script for Windows) so the Quota Bridge starts automatically on login. (Done 2026-11-24 for Linux: `bridge/scripts/quota-bridge.service` + `tarball-8000.service` + `install.sh`; live on PiBiatch. macOS/Windows templates still open.)
 - [ ] Write a clear `README.md` covering CH340 driver setup, picking `cyd-st7789` vs `cyd-ili9341`, flashing instructions, and troubleshooting white-screen / inverted-color issues.
 
 ---

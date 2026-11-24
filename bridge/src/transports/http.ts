@@ -12,6 +12,17 @@ export interface HttpOptions {
 
 const BODY_MAX = 4096;
 
+// Last-seen tracking: proves whether a device is actually polling (vs a
+// zombie link / powered-off CYD). Surfaced via GET /health as ages in
+// seconds (null = never since bridge start). No per-device identity kept.
+let lastQuotaPollMs = 0;
+let lastAskPollMs = 0;
+
+function ageSec(sinceMs: number): number | null {
+  if (!sinceMs) return null;
+  return Math.max(0, Math.round((Date.now() - sinceMs) / 1000));
+}
+
 function readJson(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let n = 0;
@@ -69,6 +80,7 @@ export function startHttpServer(opts: HttpOptions): Server {
     if (req.method === "GET" && url.pathname === "/api/quota") {
       try {
         const payload = await opts.getPayload();
+        lastQuotaPollMs = Date.now();
         const body = JSON.stringify(payload);
         res.writeHead(200, {
           "Content-Type": "application/json",
@@ -84,13 +96,21 @@ export function startHttpServer(opts: HttpOptions): Server {
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
-      const body = JSON.stringify({ ok: true, ts: Math.floor(Date.now() / 1000), ask_pending: hasPending(), endwork_pending: hasEndPending() });
+      const body = JSON.stringify({
+        ok: true,
+        ts: Math.floor(Date.now() / 1000),
+        ask_pending: hasPending(),
+        endwork_pending: hasEndPending(),
+        quota_age_s: ageSec(lastQuotaPollMs),
+        ask_age_s: ageSec(lastAskPollMs),
+      });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/ask") {
+      lastAskPollMs = Date.now();
       // ?id= returns that question's state (pending or recently answered).
       const qid = url.searchParams.get("id");
       if (qid) {

@@ -2,6 +2,32 @@
 
 All notable changes to AI Quota Monitor (bridge + CYD/TV-154 firmware).
 
+## [0.4.0] — 2026-11-24 (zombie-link self-heal + restart-proof latch)
+
+Firmware `FW_VERSION` `v0.3` → `v0.4` on both boards. Bridge `0.3.0` → `0.4.0`.
+
+### Added
+- **Firmware link watchdog:** `WL_CONNECTED` can lie (dead DHCP/ARP/gateway,
+  wedged radio — SYNC flashes on stale data). `4` failed quota polls in a row
+  forces `WiFi.disconnect` + `reconnect`; `12` in a row reboots (`QUOTA_FAIL_RECONNECT` /
+  `QUOTA_FAIL_RESTART` in `config.h`, reason on serial).
+- **Firmware stale detection:** quota older than `QUOTA_STALE_MS` (`60 s`)
+  shows OFFLINE (header `--`, red LED) even while the radio claims up.
+  LED/header now driven by freshness, not sticky flags. Heap log gains
+  `fails=` + `link=`.
+- **Bridge `/health` last-seen:** `quota_age_s` / `ask_age_s` (seconds since
+  last poll, `null` = never) — tells instantly whether the CYD is polling.
+- **Bridge END OF WORK persistence:** latch saved to
+  `~/.local/share/ai-quota-bridge/endwork.json` on every mutation, reloaded
+  on start — a bridge restart no longer wipes an undismissed event.
+- **Service templates:** `bridge/scripts/` gains `quota-bridge.service`,
+  `tarball-8000.service` (LAN `ew.tgz` for Chromebook flashing) and
+  `install.sh` (user units, no sudo; `enable-linger` still needed for
+  boot-without-login). Partially closes `PLAN.md` Phase 5 (Linux done).
+- **flash-cyd.sh legacy `--bootstrap` copies regenerated:** the 17 embedded
+  sources were v0.1-era; now byte-identical to the repo (verified by
+  extract + `diff -r`). Chromebook tarball flow republished (v0.4).
+
 ## [0.3.0] — 2026-11-22 (END OF TASK vs END OF WORK)
 
 Firmware `FW_VERSION` `v0.2` → `v0.3` on both boards. Bridge `0.1.0` → `0.3.0`.

@@ -2,7 +2,7 @@
 
 Standalone desktop hardware dashboard for real-time **OpenCode** quota
 monitoring (Go 5h / Week / Month windows, daily tokens, live session
-readout), **firmware v0.3** shown in the readout strip
+readout), **firmware v0.4** shown in the readout strip
 (`TOKENS | VER | NEXT`).
 
 > **Changelog:** see [CHANGELOG.md](CHANGELOG.md).
@@ -43,7 +43,7 @@ the question-answering design.
 │   └── src/
 │       ├── index.ts            # entry: HTTP + mDNS + optional serial
 │       ├── types.ts            # QuotaPayload + SessionInfo + Ask contracts
-│       ├── askStore.ts         # single-slot question queue w/ 30s fallback
+│       ├── askStore.ts         # single-slot question queue w/ expiry (10-300s)
 │       ├── ask-cyd.sh          # ask via device, fall back to app on timeout
 │       ├── mock.ts             # mock data generator (--mock)
 │       ├── collectors/opencode.ts  # Console API + stats CLI + DB fallback + sessions
@@ -66,14 +66,15 @@ Prerequisites: Node.js 22+ on the PiBiatch, OpenCode with local data
 (`~/.local/share/opencode/opencode.db`), the board on USB, PlatformIO
 (`pip install --user platformio`) only if you build from source.
 
-1. **Bridge** (PiBiatch, once):
+1. **Bridge** (PiBiatch, once — persistent user services, no sudo):
    ```bash
-   cd bridge && npm install && cp .env.example .env && npm run build
-   setsid nohup node dist/index.js > /tmp/opencode/bridge.log 2>&1 < /dev/null &
+   cd bridge && npm install && npm run build
+   bash bridge/scripts/install.sh   # enables + starts quota-bridge (3847) and tarball-8000 (8000)
    curl http://127.0.0.1:3847/health   # {"ok":true,...}
    ```
    Keep `HOST=0.0.0.0` in `.env` so the board can reach it over LAN.
-2. **Flash** (v0.3, from the repo checkout — paste.rs retired):
+   Boot-without-login needs one sudo one-liner: `sudo loginctl enable-linger $USER`.
+2. **Flash** (v0.4, from the repo checkout — paste.rs retired):
    ```bash
    cd firmware && PORT=/dev/ttyUSB0 bash flash-cyd.sh tv154-st7789   # TV-154 1.54" (this release)
    PORT=/dev/ttyUSB0 bash flash-cyd.sh cyd-st7789                    # CYD 2.8" (same binary split)
@@ -93,7 +94,7 @@ Prerequisites: Node.js 22+ on the PiBiatch, OpenCode with local data
 
 Chromebook (Crostini) — share the USB-serial device with Linux first
 (Settings → Developers → Linux → Manage USB devices), then paste this
-**one line** in the Linux terminal (pulls the v0.3 sources as a LAN tarball
+**one line** in the Linux terminal (pulls the v0.4 sources as a LAN tarball
 from the PiBiatch and flashes the TV-154):
 
 ```bash
@@ -113,10 +114,11 @@ for `cyd-st7789` (or `cyd-ili9341` for white/inverted CYD) for the 2.8" board.
 PlatformIO is required in the Chromebook Linux container once:
 `pip install --user platformio --break-system-packages`.
 
-Publish the tarball (PiBiatch, once per release):
+Publish the tarball (PiBiatch, once per release — served persistently by
+the `tarball-8000.service` user unit from `~/.local/share/ai-quota-bridge/www/`):
 
 ```bash
-cd ~/AI-Quota-Monitor && tar -czf /tmp/ew.tgz firmware && (cd /tmp && python3 -m http.server 8000)
+cd ~/Project && tar -czf ~/.local/share/ai-quota-bridge/www/ew.tgz firmware
 ```
 
 ## Hardware versions
@@ -130,7 +132,7 @@ cd ~/AI-Quota-Monitor && tar -czf /tmp/ew.tgz firmware && (cd /tmp && python3 -m
 | Backlight / power | BL `GPIO21` | BL `GPIO19` active-low, LCD power rail `GPIO21` active-low (must be enabled or the screen stays black) |
 | Screens | 01 QUOTA · 02 WINDOWS · 03 SCOPE · 04 STANDBY · 05 ASK | **01 QUOTA · 02 WINDOWS only** (same bridge, same data) |
 | Env | `cyd-st7789` (default) / `cyd-ili9341` | `tv154-st7789` (`tv154-diag` = PWR/BL sweep test) |
-| Firmware | v0.3 (strip VER field) | v0.3 (strip VER field) |
+| Firmware | v0.4 (strip VER field) | v0.4 (strip VER field) |
 
 ## 1. Bridge — running manual (detail)
 
@@ -159,11 +161,14 @@ Environment (`bridge/.env.example` documents most of these):
 | `SESSION_ACTIVE_MIN` | `10` | Session counts as active if touched within N minutes. |
 | `CYD_BRIDGE_URL` | `http://192.168.1.59:3847` | Used by `ask-cyd.sh` (LAN IP of the PiBiatch). |
 | `SERIAL_PORT` / `SERIAL_BAUD` / `SERIAL_INTERVAL_SEC` | _(unset)_ / `115200` / `10` | Optional USB Serial push. Also `--serial /dev/ttyUSB0`. |
+| `CYD_TOKEN` | _(unset)_ | When set, `POST /api/ask`, `/api/ask/answer`, `/api/endofwork*` require `Authorization: Bearer <token>` (GETs stay open). Bake into firmware with `-D CYD_TOKEN=...`. |
+| `ENDWORK_WATCH_SEC` | `5` | Auto END OF WORK poll cadence (OpenCode idle transitions). `ENDWORK_WATCH=0` disables it. |
+| `ENDWORK_STATE_FILE` | `~/.local/share/ai-quota-bridge/endwork.json` | Latch persistence across bridge restarts. |
 
 Endpoints:
 
 - `GET /api/quota` → `{ ts, overall_status, opencode: { connected, today_cost_usd, today_tokens_k, providers[], sessions[] } }`. Each provider: `{ name, remaining_pct, reset_in_sec, status }` with `ok ≥ 50 > warn ≥ 20 > crit`. Each session: `{ title, model }` (pretty model name, e.g. `Muse Spark 1.3 Contributor` — no provider prefix, no thinking level).
-- `GET /health` → `{ ok, ts, ask_pending, endwork_pending }`.
+- `GET /health` → `{ ok, ts, ask_pending, endwork_pending, quota_age_s, ask_age_s }` (`*_age_s` = seconds since last device poll, `null` = never — tells instantly whether a board is polling).
 - `GET /api/ask` → pending question or `204` when none. `?id=` returns that question's state, including the answer once resolved.
 - `POST /api/ask { question, options[], session?, detail?, timeout_sec? }` → creates a pending question (replaces any previous one). Options are strings or `{ id, label }` (max 4, labels ≤ 24 chars, question ≤ 120 chars).
 - `POST /api/ask/answer { id, option_id }` → records the tap. `410` when the question is gone.
@@ -176,10 +181,15 @@ Data sources (in order, each isolated so one failure never crashes the bridge):
 4. Active sessions from `session_v2` (`time_updated` within `SESSION_ACTIVE_MIN`), most-recent first, max 4.
 5. Last-known values marked `stale: true`, else `connected: false`.
 
-Keep-alive (the bridge must survive shell exits — use `setsid`):
+Keep-alive: `bridge/scripts/` holds the user units (`quota-bridge.service`,
+`tarball-8000.service`) installed by `bridge/scripts/install.sh`
+(`Restart=always`, enabled on login; with `enable-linger`, on boot too).
+The END OF WORK latch additionally persists to disk
+(`~/.local/share/ai-quota-bridge/endwork.json`), so a bridge restart never
+loses an undismissed event. Manual fallback (no systemd):
 
 ```bash
-cd bridge && npm install && npm run build  # after pulling v0.3 sources
+cd bridge && npm install && npm run build  # after pulling v0.4 sources
 cd bridge && setsid nohup node dist/index.js > /tmp/opencode/bridge.log 2>&1 < /dev/null &
 curl http://<lan-ip>:3847/health
 ```
@@ -227,7 +237,7 @@ TV-154: tap top key = next screen (01↔02), hold 5 s = wipe + portal):
 1. **01 · QUOTA** — hero quota curve, per-window labels, SESSION strip
    (conversation title + pretty model, `x/y` pager rotating every 10 s,
    pager hidden when only one session is active), TOKENS / VER / NEXT strip
-   (VER = firmware version, currently `v0.3`).
+   (VER = firmware version, currently `v0.4`).
 2. **02 · WINDOWS** — per-window rows with centered big `%` and
    right-aligned readable reset countdowns + thick bars.
    **TV-154** runs 01 + 02 only (same bridge, same data) plus END - WORK
@@ -288,7 +298,7 @@ curve/truncation algorithms as the firmware, 1× canvas nearest-upscaled ×3:
 ```bash
 python3 mock_hw_render.py       # writes hw-ov/prov/scope/ask.png (+ v2 proposals)
 python3 mock_tv154_render.py   # writes hw-tv154-ov/prov.png (240x240)
-python3 mock_tv154_endotask_render.py  # writes mockup-tv154-endotask-ice/white.png + combo (END OF TASK, v0.3)
+python3 mock_tv154_endotask_render.py  # writes mockup-tv154-endotask-ice/white.png + combo (END OF TASK, v0.4)
 python3 -m http.server 8080  # view from another machine on the LAN
 ```
 

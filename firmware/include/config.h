@@ -100,7 +100,7 @@
 #define BUTTON_LONG_MS 5000
 
 // Firmware version shown in the readout strip (VER field), both hardware.
-#define FW_VERSION "v0.3"
+#define FW_VERSION "v0.4"
 
 // Compact payload guard: ESP32 parses this on the stack.
 #define QUOTA_JSON_MAX 2048
@@ -137,6 +137,16 @@
 // Fixes C1 (drop latched offline forever). NTP re-synced on regain.
 #define WIFI_RECONNECT_SEC 30
 #define WIFI_RECONNECT_MS (WIFI_RECONNECT_SEC * 1000UL)
+
+// Link watchdog: WL_CONNECTED can lie (zombie DHCP/ARP/gateway lease or a
+// wedged radio — SYNC badges keep flashing while no byte gets through).
+// Consecutive failed quota polls force a radio reconnect, then a reboot:
+// a wall display must self-heal. Counted in main.cpp pollNow(), WiFi path.
+#define QUOTA_FAIL_RECONNECT 4
+#define QUOTA_FAIL_RESTART 12
+// Data staleness: last successful quota older than this shows OFFLINE
+// (LED + readout badge) even while WL_CONNECTED. ~4x the 15s default poll.
+#define QUOTA_STALE_MS 60000UL
 
 // Backlight: EMA + deadband + fast slew (fixes H5 slow 107s swing).
 #define BL_EMA_N 4

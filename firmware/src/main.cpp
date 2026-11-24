@@ -33,6 +33,28 @@ static bool g_hasAnswer = false;
 static char g_answerId[ASK_ID_MAX + 1];
 static char g_answerOpt[ASK_ID_MAX + 1];
 
+// Link watchdog (zombie-link self-heal): last successful quota stamp +
+// consecutive-failure count. WL_CONNECTED alone is not trusted — data
+// freshness is the real signal (see QUOTA_FAIL_*/QUOTA_STALE_MS).
+static unsigned long g_lastQuotaOk = 0;
+static bool g_quotaOkOnce = false;
+static uint8_t g_quotaFails = 0;
+
+/** Any quota source (WiFi poll or USB-serial push) succeeded recently. */
+static bool quotaFresh() {
+  return g_quotaOkOnce && (millis() - g_lastQuotaOk < QUOTA_STALE_MS);
+}
+
+/** Effective link: fresh data AND (cable push OR radio up). */
+static bool linkUp() { return quotaFresh() && (g_serialMode || netIsConnected()); }
+
+/** Stamp a successful quota update (WiFi or serial). Resets the watchdog. */
+static void quotaOkStamp() {
+  g_lastQuotaOk = millis();
+  g_quotaOkOnce = true;
+  g_quotaFails = 0;
+}
+
 // END - WORK latch: hero blink phase + dismissed id (touch clears locally,
 // deferred POST clears the bridge slot). Stays until ANY screen touch.
 static bool g_endBlink = false;
@@ -57,7 +79,7 @@ static char s_line[QUOTA_JSON_MAX + 1];
 static size_t s_lineLen = 0;
 
 static void render() {
-  bool netUp = netIsConnected();
+  bool netUp = linkUp();
 #ifdef TV154
   // 01+02 only; any stray ASK/other id falls back to overview.
   if (g_screen >= SCR_COUNT) g_screen = SCR_OVERVIEW;
@@ -124,6 +146,7 @@ static void pollNow() {
   if (netFetchQuota(g_cfg, next)) {
     g_state = next;
     g_serialMode = false;
+    quotaOkStamp();
     // END - WORK latch: new (not dismissed) event pops the screen and each
     // poll toggles the hero blink so the change is clearly visible.
     if (endWorkActive()) {
@@ -136,6 +159,21 @@ static void pollNow() {
       g_screen = SCR_OVERVIEW;
     }
     render();
+  } else if (!g_serialMode) {
+    // L7 watchdog: WL_CONNECTED lies on zombie links (dead DHCP/ARP/gateway
+    // or wedged radio) — SYNC would flash forever on stale data. Count
+    // consecutive failures: reconnect the radio first, reboot as last resort.
+    if (g_quotaFails < 255) g_quotaFails++;
+    if (g_quotaFails >= QUOTA_FAIL_RESTART) {
+      Serial.printf("link watchdog: %u quota fails, rebooting\n", (unsigned)g_quotaFails);
+      delay(200);
+      ESP.restart();
+    } else if (g_quotaFails == QUOTA_FAIL_RECONNECT) {
+      Serial.printf("link watchdog: %u quota fails, reconnecting WiFi\n", (unsigned)g_quotaFails);
+      WiFi.disconnect(false, false);
+      WiFi.reconnect();
+    }
+    render();  // refresh the OFFLINE/stale indicator promptly
   }
   g_lastPoll = millis();
 }
@@ -190,6 +228,7 @@ static void handleSerialLine() {
   if (parseQuotaPayload(s_line, s_lineLen, next)) {
     g_state = next;
     g_serialMode = true;
+    quotaOkStamp();
     if (endWorkActive()) {
       g_endBlink = !g_endBlink;
       if (g_screen != SCR_ENDWORK) g_screen = SCR_ENDWORK;
@@ -524,9 +563,10 @@ void loop() {
 
   if (now - g_lastHeapLog > 60000) {
     g_lastHeapLog = now;
-    Serial.printf("heap=%u screen=%u pending=%d\n", (unsigned)ESP.getFreeHeap(), g_screen, (int)g_ask.pending);
+    Serial.printf("heap=%u screen=%u pending=%d fails=%u link=%d\n", (unsigned)ESP.getFreeHeap(), g_screen, (int)g_ask.pending,
+                (unsigned)g_quotaFails, (int)linkUp());
   }
 
-  ledTick(g_state.fresh ? g_state.overall : ST_OFFLINE);
+  ledTick(linkUp() ? g_state.overall : ST_OFFLINE);
   delay(20);
 }
